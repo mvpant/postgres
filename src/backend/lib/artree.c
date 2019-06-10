@@ -76,6 +76,10 @@ struct art_tree {
     art_node *root;
     MemoryContext context;
     uint64 size;
+    uint32 size4;
+    uint32 size16;
+    uint32 size48;
+    uint32 size256;
 };
 
 static art_node *alloc_node(art_tree *, uint8_t type);
@@ -99,6 +103,10 @@ art_create(void)
     art->root = NULL;
     art->context = CurrentMemoryContext;
     art->size = 0;
+    art->size4 = 0;
+    art->size16 = 0;
+    art->size48 = 0;
+    art->size256 = 0;
 
     return art;
 }
@@ -113,6 +121,14 @@ void
 art_print_memory_usage(art_tree *t)
 {
     MemoryContextStats(t->context);
+}
+
+void
+art_print_nodes_proportion(art_tree *t)
+{
+	fprintf(stderr,
+			"Node4: %u Node16: %u Node48: %u Node256: %u\n",
+			t->size4, t->size16, t->size48, t->size256);
 }
 
 /**
@@ -134,18 +150,22 @@ alloc_node(art_tree *art, uint8_t type)
     case NODE4:
         n = (art_node *) MemoryContextAllocZero(art->context,
                                                 sizeof(art_node4));
+	art->size4++;
         break;
     case NODE16:
         n = (art_node *) MemoryContextAllocZero(art->context,
                                                 sizeof(art_node16));
+	art->size16++;
         break;
     case NODE48:
         n = (art_node *) MemoryContextAllocZero(art->context,
                                                 sizeof(art_node48));
+	art->size48++;
         break;
     case NODE256:
         n = (art_node *) MemoryContextAllocZero(art->context,
                                                 sizeof(art_node256));
+	art->size256++;
         break;
     default:
         elog(ERROR, "alloc_node: unknown art_node type");
@@ -737,6 +757,7 @@ remove_child256(art_tree *t, art_node256 *n, art_node **ref, uint8 c)
             }
         }
         pfree(n);
+        t->size256--;
     }
 }
 
@@ -763,6 +784,7 @@ remove_child48(art_tree *t, art_node48 *n, art_node **ref, uint8 c)
             }
         }
         pfree(n);
+        t->size48--;
     }
 }
 
@@ -782,6 +804,7 @@ remove_child16(art_tree *t, art_node16 *n, art_node **ref, art_node **l)
         memcpy(new_node->keys, n->keys, 4);
         memcpy(new_node->children, n->children, 4 * sizeof(void *));
         pfree(n);
+        t->size16--;
     }
 }
 
@@ -817,6 +840,7 @@ remove_child4(art_tree *t, art_node4 *n, art_node **ref, art_node **l)
         }
         *ref = child;
         pfree(n);
+        t->size4--;
     }
 }
 

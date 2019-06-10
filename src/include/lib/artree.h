@@ -8,6 +8,7 @@ extern art_tree *art_create(void);
 
 extern uint64 art_num_entries(art_tree *t);
 extern void art_print_memory_usage(art_tree *t);
+extern void art_print_nodes_proportion(art_tree *t);
 
 /**
  * Destroys an ART tree
