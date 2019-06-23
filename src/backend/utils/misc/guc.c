@@ -2617,7 +2617,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_MS
 		},
 		&BgWriterDelay,
-		200, 10, 10000,
+		200, 10, 10000 * 10000,
 		NULL, NULL, NULL
 	},
 

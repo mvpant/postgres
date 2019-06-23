@@ -353,6 +353,40 @@ ShmemInitHash(const char *name,		/* table string name for shmem index */
 }
 
 /*
+ * ShmemInitTree -- Create and initialize, or attach to, a
+ *		shared memory tree.
+ *
+ */
+SHMTREE *
+ShmemInitTree(const char *name,		/* tree string name for shmem index */
+			  SHMTREECTL *infoP,	/* info about key and bucket size */
+			  int tree_flags)	/* info about infoP */
+{
+	bool		found;
+	void	   *location;
+
+	infoP->alloc = ShmemAllocNoError;
+	tree_flags |= SHMTREE_SHARED_MEM | SHMTREE_ALLOC;
+
+	/* look it up in the shmem index */
+	location = ShmemInitStruct(name,
+							   shmtree_get_shared_size(infoP, tree_flags),
+							   &found);
+
+	/*
+	 * if it already exists, attach to it rather than allocate and initialize
+	 * new space
+	 */
+	if (found)
+		tree_flags |= SHMTREE_ATTACH;
+
+	/* Pass location of hashtable header to hash_create */
+	infoP->tctl = (SHMTREEHDR *) location;
+
+	return shmtree_create(name, infoP, tree_flags);
+}
+
+/*
  * ShmemInitStruct -- Create/attach to a structure in shared memory.
  *
  *		This is called during initialization to find or allocate

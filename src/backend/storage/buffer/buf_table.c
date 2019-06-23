@@ -34,6 +34,9 @@ typedef struct
 
 static HTAB *SharedBufHash;
 
+static SHMTREE *SharedBufTree;
+
+static bool debugon = false;
 
 /*
  * Estimate space needed for mapping hashtable
@@ -42,7 +45,10 @@ static HTAB *SharedBufHash;
 Size
 BufTableShmemSize(int size)
 {
-	return hash_estimate_size(size, sizeof(BufferLookupEnt));
+    Size hashsize = hash_estimate_size(size, sizeof(BufferLookupEnt));
+    Size shmtree = shmtree_estimate_size(sizeof(BufferTag));
+
+	return hashsize + shmtree;
 }
 
 /*
@@ -53,6 +59,7 @@ void
 InitBufTable(int size)
 {
 	HASHCTL		info;
+    SHMTREECTL  tinfo;
 
 	/* assume no locking is needed yet */
 
@@ -65,6 +72,12 @@ InitBufTable(int size)
 								  size, size,
 								  &info,
 								  HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
+
+	tinfo.keysize = sizeof(BufferTag);
+	tinfo.entrysize = sizeof(BufferLookupEnt);
+	SharedBufTree = ShmemInitTree("Shared Buffer Lookup Tree",
+								  &tinfo,
+								  SHMTREE_ELEM);
 }
 
 /*
@@ -131,6 +144,13 @@ BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
 									hashcode,
 									HASH_ENTER,
 									&found);
+
+    if (debugon) {
+        int64_t payload = buf_id;
+        uintptr_t shmresult;
+        shmresult = (uintptr_t) shmtree_insert(
+            SharedBufTree, (const uint8_t *) tagPtr, (void *) payload);
+    }
 
 	if (found)					/* found something already in the table */
 		return result->id;
