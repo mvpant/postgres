@@ -39,5 +39,6 @@ extern void shmtree_memory_usage(SHMTREE *shmt);
 extern void shmtree_nodes_proportion(SHMTREE *shmt);
 extern Size shmtree_estimate_size(Size keysize);
 extern Size shmtree_get_shared_size(SHMTREECTL *info, int flags);
+extern long * shmtree_nodes_used(SHMTREE *shmt);
 
 #endif

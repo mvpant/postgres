@@ -38,6 +38,8 @@
 
 #define IGNORE_UNUSED(var) (void) (var)
 
+static long stats[5];
+
 typedef struct art_node {
     uint8 type;
     uint8 num_children;
@@ -446,6 +448,18 @@ void shmtree_nodes_proportion(SHMTREE *shmt)
 			t->size4, t->size16, t->size48, t->size256);
 }
 
+long *
+shmtree_nodes_used(SHMTREE *shmt)
+{
+    //todo add spins
+    SHMTREEHDR *shmth = shmt->tctl;
+    stats[0] = NODELEAF_NELEM - shmth->freeList[4].nentries;
+    stats[1] = NODE4_NELEM - shmth->freeList[0].nentries;
+    stats[2] = NODE16_NELEM - shmth->freeList[1].nentries;
+    stats[3] = NODE48_NELEM - shmth->freeList[2].nentries;
+    stats[4] = NODE256_NELEM - shmth->freeList[3].nentries;
+    return stats;
+}
 
 /**
  * Macros to manipulate pointer tags

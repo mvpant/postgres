@@ -36,7 +36,9 @@ static HTAB *SharedBufHash;
 
 static SHMTREE *SharedBufTree;
 
-static bool debugon = false;
+static bool debugon = true;
+
+#define PAYLOAD_MOD 0xF0000000
 
 /*
  * Estimate space needed for mapping hashtable
@@ -113,6 +115,39 @@ BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
 									HASH_FIND,
 									NULL);
 
+    if (debugon) {
+        bool good = false;
+        uintptr_t shmresult;
+        shmresult = (uintptr_t) shmtree_search(
+            SharedBufTree, (const uint8_t *) tagPtr);
+        if (result)
+        {
+            good = result->id == (shmresult & ~PAYLOAD_MOD);
+            if (good)
+            {
+                elog(DEBUG1, "lookup: [+] tag rel=%d fork=%d blk=%d",
+                        tagPtr->rnode.relNode,
+                        tagPtr->forkNum,
+                        tagPtr->blockNum);
+            }
+        }
+        else
+        {
+            good = shmresult == 0;
+            if (good)
+            {
+                elog(DEBUG1, "lookup: [-] tag rel=%d fork=%d blk=%d",
+                        tagPtr->rnode.relNode,
+                        tagPtr->forkNum,
+                        tagPtr->blockNum);
+            }
+        }
+        if (!good)
+        {
+            elog(WARNING, "lookup:shmtree did not find tag.");
+        }
+    }
+
 	if (!result)
 		return -1;
 
@@ -146,10 +181,37 @@ BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
 									&found);
 
     if (debugon) {
-        int64_t payload = buf_id;
+        bool good = false;
+        uint64_t payload = PAYLOAD_MOD | buf_id;
         uintptr_t shmresult;
         shmresult = (uintptr_t) shmtree_insert(
             SharedBufTree, (const uint8_t *) tagPtr, (void *) payload);
+        if (found)
+        {
+            good = result->id == (shmresult & ~PAYLOAD_MOD);
+            if (good)
+            {
+                elog(DEBUG1, "insert: [-] tag rel=%s fork=%d blk=%u",
+                        relpathbackend(tagPtr->rnode, InvalidBackendId, tagPtr->forkNum),
+                        tagPtr->forkNum,
+                        tagPtr->blockNum);
+            }
+        }
+        else
+        {
+            good = shmresult == 0;
+            if (good)
+            {
+                elog(DEBUG1, "insert: [+] tag rel=%s fork=%d blk=%u",
+                        relpathbackend(tagPtr->rnode, InvalidBackendId, tagPtr->forkNum),
+                        tagPtr->forkNum,
+                        tagPtr->blockNum);
+            }
+        }
+        if (!good)
+        {
+            elog(WARNING, "insert:shmtree did not find tag.");
+        }
     }
 
 	if (found)					/* found something already in the table */
@@ -178,6 +240,34 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 									HASH_REMOVE,
 									NULL);
 
+    if (debugon) {
+        bool good = false;
+        uintptr_t shmresult;
+        shmresult = (uintptr_t) shmtree_delete(
+            SharedBufTree, (const uint8_t *) tagPtr);
+        if (result)
+        {
+            good = result->id == (shmresult & ~PAYLOAD_MOD);
+            if (good)
+            {
+                elog(DEBUG1, "delete: [+] tag rel=%d fork=%d blk=%d",
+                        tagPtr->rnode.relNode,
+                        tagPtr->forkNum,
+                        tagPtr->blockNum);
+            }
+        }
+        if (!good)
+        {
+            elog(WARNING, "delete:shmtree did not find tag.");
+        }
+    }
+
 	if (!result)				/* shouldn't happen */
 		elog(ERROR, "shared buffer hash table corrupted");
+}
+
+long *
+BufTreeStats(void)
+{
+    return shmtree_nodes_used(SharedBufTree);
 }

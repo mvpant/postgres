@@ -1,6 +1,7 @@
 #include "postgres.h"
 
 #include "lib/artree.h"
+#include "utils/shm_tree.h"
 
 #include "fmgr.h"
 #include "nodes/bitmapset.h"
@@ -11,9 +12,16 @@
 #include "miscadmin.h"
 #include "utils/builtins.h"
 
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
+#include "funcapi.h"
+#include "storage/buf_internals.h"
+#include "storage/bufmgr.h"
+
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(test_artree);
+PG_FUNCTION_INFO_V1(pg_stat_get_shmtree);
 
 static void test_art_insert(char *filepath);
 static void test_art_insert_search_delete(char *filepath);
@@ -206,4 +214,45 @@ test_art_insert_search_delete(char *filepath)
     elog(LOG, "test_art_insert_search_delete end \n\n");
 
     elog(LOG, "art_size " UINT64_FORMAT, art_num_entries(art));
+}
+
+Datum
+pg_stat_get_shmtree(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[5];
+	bool		nulls[5];
+	long *vals;
+
+	/* Initialise values and NULL flags arrays */
+	MemSet(values, 0, sizeof(values));
+	MemSet(nulls, 0, sizeof(nulls));
+
+	/* Initialise attributes information in the tuple descriptor */
+	tupdesc = CreateTemplateTupleDesc(5, false);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "leafs",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "node4",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "node16",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "node48",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "node256",
+					   INT4OID, -1, 0);
+
+	BlessTupleDesc(tupdesc);
+
+	vals = BufTreeStats();
+
+	/* Fill values and NULLs */
+	values[0] = Int32GetDatum(vals[0]);
+	values[1] = Int32GetDatum(vals[1]);
+	values[2] = Int32GetDatum(vals[2]);
+	values[3] = Int32GetDatum(vals[3]);
+	values[4] = Int32GetDatum(vals[4]);
+
+	/* Returns the record as Datum */
+	PG_RETURN_DATUM(HeapTupleGetDatum(
+									  heap_form_tuple(tupdesc, values, nulls)));
 }
