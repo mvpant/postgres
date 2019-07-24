@@ -40,6 +40,9 @@ static bool debugon = true;
 
 #define PAYLOAD_MOD 0xF0000000
 
+#define ART_DRIVER 1
+// #define ART_DRIVEN 1
+
 /*
  * Estimate space needed for mapping hashtable
  *		size is the desired hash table size (possibly more than NBuffers)
@@ -108,13 +111,56 @@ BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
 
+#ifdef ART_DRIVER
+	bool good = false;
+	uintptr_t shmresult;
+	int buf_id;
+	shmresult = (uintptr_t) shmtree_search(
+		SharedBufTree, (const uint8_t *) tagPtr);
+#endif
 	result = (BufferLookupEnt *)
 		hash_search_with_hash_value(SharedBufHash,
 									(void *) tagPtr,
 									hashcode,
 									HASH_FIND,
 									NULL);
+#ifdef ART_DRIVER
+	if (shmresult == 0)
+	{
+		good = (result == NULL);
+		if (!good)
+		{
+			elog(WARNING, "lookup:shmtree not found, hash did.");
+			return result->id;
+		}
+		else
+		{
+			return -1;
+		}
+	}
+	else
+	{
+		good = (result != NULL);
+		if (good)
+		{
+			buf_id = shmresult & ~PAYLOAD_MOD;
+			good = result->id == buf_id;
+			if (!good) {
+				elog(WARNING, "lookup:shmtree mismatch. hash=%d tree=%d",
+					result->id, buf_id);
+				return result->id;
+			}
+			return buf_id;
+		}
+		else
+		{
+			elog(WARNING, "lookup:shmtree found tag, hash not.");
+			return -1;
+		}
+	}
+#endif
 
+#ifdef ART_DRIVEN
     if (debugon) {
         bool good = false;
         uintptr_t shmresult;
@@ -148,6 +194,7 @@ BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
 				result->id, shmresult & ~PAYLOAD_MOD);
         }
     }
+#endif
 
 	if (!result)
 		return -1;
@@ -174,13 +221,54 @@ BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
 	Assert(buf_id >= 0);		/* -1 is reserved for not-in-table */
 	Assert(tagPtr->blockNum != P_NEW);	/* invalid tag */
 
+#ifdef ART_DRIVER
+	bool good = false;
+	uintptr_t shmresult;
+	uint64_t payload = PAYLOAD_MOD | buf_id;
+	shmresult = (uintptr_t) shmtree_insert(
+		SharedBufTree, (const uint8_t *) tagPtr, (void *) payload);
+#endif
 	result = (BufferLookupEnt *)
 		hash_search_with_hash_value(SharedBufHash,
 									(void *) tagPtr,
 									hashcode,
 									HASH_ENTER,
 									&found);
+#ifdef ART_DRIVER
+	if (shmresult != 0) // found old result
+	{
+		int old_buf_id = shmresult & ~PAYLOAD_MOD;
+		good = (result != NULL);
+		if (good)
+		{
+			good = result->id == old_buf_id;
+			if (!good)
+			{
+				elog(WARNING, "insert:shmtree did not find tag. hash=%d told=%d tnew=%d",
+						result->id, old_buf_id, buf_id);
+				return result->id;
+			}
+			return old_buf_id;
+		}
+		else
+		{
+			elog(WARNING, "insert:shmtree found old, hash not");
+			return old_buf_id;
+		}
+	}
+	else // didnt find anything
+	{
+		if (found)
+		{
+			elog(WARNING, "insert:shmtree did not find tag, but hash");
+			return result->id;
+		}
+		result->id = buf_id;
+		return -1;
+	}
+#endif
 
+#ifdef ART_DRIVEN
     if (debugon) {
         bool good = false;
         uint64_t payload = PAYLOAD_MOD | buf_id;
@@ -215,6 +303,7 @@ BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
 					result->id, shmresult & ~PAYLOAD_MOD, buf_id);
         }
     }
+#endif
 
 	if (found)					/* found something already in the table */
 		return result->id;
@@ -235,13 +324,38 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
 
+#ifdef ART_DRIVER
+	bool good = false;
+	uintptr_t shmresult;
+	int old_buf_id;
+	shmresult = (uintptr_t) shmtree_delete(
+		SharedBufTree, (const uint8_t *) tagPtr);
+#endif
+
 	result = (BufferLookupEnt *)
 		hash_search_with_hash_value(SharedBufHash,
 									(void *) tagPtr,
 									hashcode,
 									HASH_REMOVE,
 									NULL);
+#ifdef ART_DRIVER
+	if (!shmresult)
+	{
+		elog(WARNING, "delete:shmtree corrupted");
+	}
+	else
+	{
+		old_buf_id = shmresult & ~PAYLOAD_MOD;
+		good = result->id == old_buf_id;
+		if (!good)
+		{
+			elog(WARNING, "delete:shmtree mismatch. hash=%d tree=%d",
+					result->id, old_buf_id);
+		}
+	}
+#endif
 
+#ifdef ART_DRIVEN
     if (debugon) {
         bool good = false;
         uintptr_t shmresult;
@@ -264,6 +378,7 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 					result->id, shmresult & ~PAYLOAD_MOD);
         }
     }
+#endif
 
 	if (!result)				/* shouldn't happen */
 		elog(ERROR, "shared buffer hash table corrupted");
