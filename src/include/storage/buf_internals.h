@@ -326,6 +326,9 @@ extern uint32 BufTableHashCode(BufferTag *tagPtr);
 extern int	BufTableLookup(BufferTag *tagPtr, uint32 hashcode);
 extern int	BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id);
 extern void BufTableDelete(BufferTag *tagPtr, uint32 hashcode);
+extern int	BufTableLookupCached(void *opaque, BufferTag *tagPtr, uint32 hashcode);
+extern int	BufTableInsertCached(void *opaque, BufferTag *tagPtr, uint32 hashcode, int buf_id);
+extern void BufTableDeleteCached(void *opaque, BufferTag *tagPtr, uint32 hashcode);
 extern long * BufTreeStats(void);
 
 /* localbuf.c */

@@ -173,7 +173,10 @@ smgropen(RelFileNode rnode, BackendId backend)
 
 		/* mark it not open */
 		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
+		{
 			reln->md_num_open_segs[forknum] = 0;
+			reln->cached_forks[forknum] = NULL;
+		}
 
 		/* it has no owner yet */
 		dlist_push_tail(&unowned_relns, &reln->node);

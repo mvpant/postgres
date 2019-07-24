@@ -19,6 +19,8 @@
 #include "storage/block.h"
 #include "storage/relfilenode.h"
 
+#include "utils/shm_tree.h"
+
 
 /*
  * smgr.c maintains a table of SMgrRelation objects, which are essentially
@@ -71,6 +73,11 @@ typedef struct SMgrRelationData
 	 */
 	int			md_num_open_segs[MAX_FORKNUM + 1];
 	struct _MdfdVec *md_seg_fds[MAX_FORKNUM + 1];
+
+	/* here we try to cache shared subtrees,
+	 * so 16 bytes of BufferTag search can be skipped
+	 */
+	SHMTREE *cached_forks[MAX_FORKNUM + 1];
 
 	/* if unowned, list link in list of all unowned SMgrRelations */
 	dlist_node	node;

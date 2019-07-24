@@ -54,6 +54,7 @@
 
 
 #define USE_ART 1
+#define USE_ART_CACHE 1
 
 // #define USE_HASH 1
 
@@ -576,7 +577,11 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 #ifdef USE_ART
 		LWLockAcquire(SHMTreeLock, LW_SHARED);
 #endif
+#ifdef USE_ART_CACHE
+		buf_id = BufTableLookupCached((void *) reln->rd_smgr, &newTag, newHash);
+#else
 		buf_id = BufTableLookup(&newTag, newHash);
+#endif
 #ifdef USE_HASH
 		LWLockRelease(newPartitionLock);
 #endif
@@ -1037,7 +1042,11 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 #ifdef USE_ART
 	LWLockAcquire(SHMTreeLock, LW_SHARED);
 #endif
+#ifdef USE_ART_CACHE
+	buf_id = BufTableLookupCached((void *) smgr, &newTag, newHash);
+#else
 	buf_id = BufTableLookup(&newTag, newHash);
+#endif
 	if (buf_id >= 0)
 	{
 		/*
@@ -1256,6 +1265,9 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			oldHash = 0;
 		}
 
+#ifdef USE_ART_CACHE
+		buf_id = BufTableInsertCached((void *) smgr, &newTag, newHash, buf->buf_id);
+#else
 		/*
 		 * Try to make a hashtable entry for the buffer under its new tag.
 		 * This could fail because while we were writing someone else
@@ -1264,6 +1276,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * tag.
 		 */
 		buf_id = BufTableInsert(&newTag, newHash, buf->buf_id);
+#endif
 
 		if (buf_id >= 0)
 		{
@@ -1336,7 +1349,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			break;
 
 		UnlockBufHdr(buf, buf_state);
+#ifdef USE_ART_CACHE
+		BufTableDeleteCached((void *)smgr, &newTag, newHash);
+#else
 		BufTableDelete(&newTag, newHash);
+#endif
+
 #ifdef USE_HASH
 		if (oldPartitionLock != NULL &&
 			oldPartitionLock != newPartitionLock)
