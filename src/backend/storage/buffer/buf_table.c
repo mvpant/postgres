@@ -36,12 +36,13 @@ static HTAB *SharedBufHash;
 
 static SHMTREE *SharedBufTree;
 
-static bool debugon = true;
-
 #define PAYLOAD_MOD 0xF0000000
 
-#define ART_DRIVER 1
-// #define ART_DRIVEN 1
+// #define VALIDATE_ART 1
+
+#define USE_ART 1
+
+// #define USE_HASH 1
 
 /*
  * Estimate space needed for mapping hashtable
@@ -110,32 +111,28 @@ int
 BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
-
-#ifdef ART_DRIVER
+#ifdef USE_ART
 	bool good = false;
 	uintptr_t shmresult;
-	int buf_id;
+
 	shmresult = (uintptr_t) shmtree_search(
 		SharedBufTree, (const uint8_t *) tagPtr);
 #endif
+#ifdef USE_HASH
 	result = (BufferLookupEnt *)
 		hash_search_with_hash_value(SharedBufHash,
 									(void *) tagPtr,
 									hashcode,
 									HASH_FIND,
 									NULL);
-#ifdef ART_DRIVER
-	if (shmresult == 0)
+#endif
+#ifdef VALIDATE_ART
+	if (!shmresult)
 	{
 		good = (result == NULL);
 		if (!good)
 		{
-			elog(WARNING, "lookup:shmtree not found, hash did.");
-			return result->id;
-		}
-		else
-		{
-			return -1;
+			elog(WARNING, "lookup:shmtree did not found, hash did.");
 		}
 	}
 	else
@@ -143,63 +140,30 @@ BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
 		good = (result != NULL);
 		if (good)
 		{
-			buf_id = shmresult & ~PAYLOAD_MOD;
-			good = result->id == buf_id;
+			good = result->id == (shmresult & ~PAYLOAD_MOD);
 			if (!good) {
 				elog(WARNING, "lookup:shmtree mismatch. hash=%d tree=%d",
-					result->id, buf_id);
-				return result->id;
+					result->id, shmresult & ~PAYLOAD_MOD);
 			}
-			return buf_id;
 		}
 		else
 		{
 			elog(WARNING, "lookup:shmtree found tag, hash not.");
-			return -1;
 		}
 	}
 #endif
+#ifdef USE_ART
+	if (!shmresult)
+		return -1;
 
-#ifdef ART_DRIVEN
-    if (debugon) {
-        bool good = false;
-        uintptr_t shmresult;
-        shmresult = (uintptr_t) shmtree_search(
-            SharedBufTree, (const uint8_t *) tagPtr);
-        if (result)
-        {
-            good = result->id == (shmresult & ~PAYLOAD_MOD);
-            if (good)
-            {
-                elog(DEBUG1, "lookup: [+] tag rel=%d fork=%d blk=%d",
-                        tagPtr->rnode.relNode,
-                        tagPtr->forkNum,
-                        tagPtr->blockNum);
-            }
-        }
-        else
-        {
-            good = shmresult == 0;
-            if (good)
-            {
-                elog(DEBUG1, "lookup: [-] tag rel=%d fork=%d blk=%d",
-                        tagPtr->rnode.relNode,
-                        tagPtr->forkNum,
-                        tagPtr->blockNum);
-            }
-        }
-        if (!good)
-        {
-			elog(WARNING, "lookup:shmtree did not find tag. hash=%d tree=%d",
-				result->id, shmresult & ~PAYLOAD_MOD);
-        }
-    }
+	return shmresult & ~PAYLOAD_MOD;
 #endif
-
+#ifdef USE_HASH
 	if (!result)
 		return -1;
 
 	return result->id;
+#endif
 }
 
 /*
@@ -221,96 +185,63 @@ BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
 	Assert(buf_id >= 0);		/* -1 is reserved for not-in-table */
 	Assert(tagPtr->blockNum != P_NEW);	/* invalid tag */
 
-#ifdef ART_DRIVER
+#ifdef USE_ART
 	bool good = false;
 	uintptr_t shmresult;
 	uint64_t payload = PAYLOAD_MOD | buf_id;
+
 	shmresult = (uintptr_t) shmtree_insert(
 		SharedBufTree, (const uint8_t *) tagPtr, (void *) payload);
 #endif
+#ifdef USE_HASH
 	result = (BufferLookupEnt *)
 		hash_search_with_hash_value(SharedBufHash,
 									(void *) tagPtr,
 									hashcode,
 									HASH_ENTER,
 									&found);
-#ifdef ART_DRIVER
-	if (shmresult != 0) // found old result
+#endif
+#ifdef VALIDATE_ART
+	if (shmresult) // found existing tag
 	{
-		int old_buf_id = shmresult & ~PAYLOAD_MOD;
 		good = (result != NULL);
 		if (good)
 		{
-			good = result->id == old_buf_id;
+			good = result->id == (shmresult & ~PAYLOAD_MOD);
 			if (!good)
 			{
-				elog(WARNING, "insert:shmtree did not find tag. hash=%d told=%d tnew=%d",
-						result->id, old_buf_id, buf_id);
-				return result->id;
+				elog(WARNING, "insert:shmtree mismatch. hash=%d told=%d tnew=%d",
+						result->id, shmresult & ~PAYLOAD_MOD, buf_id);
 			}
-			return old_buf_id;
 		}
 		else
 		{
-			elog(WARNING, "insert:shmtree found old, hash not");
-			return old_buf_id;
+			elog(WARNING, "insert:shmtree found old, hash did not");
 		}
 	}
 	else // didnt find anything
 	{
 		if (found)
 		{
-			elog(WARNING, "insert:shmtree did not find tag, but hash");
-			return result->id;
+			elog(WARNING, "insert:shmtree did not find, but hash did");
 		}
 		result->id = buf_id;
-		return -1;
 	}
 #endif
+#ifdef USE_ART
+	if (shmresult)
+		return shmresult & ~PAYLOAD_MOD;
 
-#ifdef ART_DRIVEN
-    if (debugon) {
-        bool good = false;
-        uint64_t payload = PAYLOAD_MOD | buf_id;
-        uintptr_t shmresult;
-        shmresult = (uintptr_t) shmtree_insert(
-            SharedBufTree, (const uint8_t *) tagPtr, (void *) payload);
-        if (found)
-        {
-            good = result->id == (shmresult & ~PAYLOAD_MOD);
-            if (good)
-            {
-                elog(DEBUG1, "insert: [-] tag rel=%s fork=%d blk=%u",
-                        relpathbackend(tagPtr->rnode, InvalidBackendId, tagPtr->forkNum),
-                        tagPtr->forkNum,
-                        tagPtr->blockNum);
-            }
-        }
-        else
-        {
-            good = shmresult == 0;
-            if (good)
-            {
-                elog(DEBUG1, "insert: [+] tag rel=%s fork=%d blk=%u",
-                        relpathbackend(tagPtr->rnode, InvalidBackendId, tagPtr->forkNum),
-                        tagPtr->forkNum,
-                        tagPtr->blockNum);
-            }
-        }
-        if (!good)
-        {
-			elog(WARNING, "insert:shmtree did not find tag. hash=%d told=%d tnew=%d",
-					result->id, shmresult & ~PAYLOAD_MOD, buf_id);
-        }
-    }
+	return -1;
 #endif
-
+#ifdef USE_HASH
 	if (found)					/* found something already in the table */
 		return result->id;
 
 	result->id = buf_id;
 
 	return -1;
+#endif
 }
 
 /*
@@ -323,65 +254,40 @@ void
 BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
-
-#ifdef ART_DRIVER
 	bool good = false;
 	uintptr_t shmresult;
-	int old_buf_id;
+
+#ifdef USE_ART
 	shmresult = (uintptr_t) shmtree_delete(
 		SharedBufTree, (const uint8_t *) tagPtr);
 #endif
-
+#ifdef USE_HASH
 	result = (BufferLookupEnt *)
 		hash_search_with_hash_value(SharedBufHash,
 									(void *) tagPtr,
 									hashcode,
 									HASH_REMOVE,
 									NULL);
-#ifdef ART_DRIVER
+#endif
 	if (!shmresult)
 	{
 		elog(WARNING, "delete:shmtree corrupted");
 	}
+#ifdef VALIDATE_ART
 	else
 	{
-		old_buf_id = shmresult & ~PAYLOAD_MOD;
-		good = result->id == old_buf_id;
+		good = result->id == (shmresult & ~PAYLOAD_MOD);
 		if (!good)
 		{
 			elog(WARNING, "delete:shmtree mismatch. hash=%d tree=%d",
-					result->id, old_buf_id);
+					result->id, shmresult & ~PAYLOAD_MOD);
 		}
 	}
 #endif
-
-#ifdef ART_DRIVEN
-    if (debugon) {
-        bool good = false;
-        uintptr_t shmresult;
-        shmresult = (uintptr_t) shmtree_delete(
-            SharedBufTree, (const uint8_t *) tagPtr);
-        if (result)
-        {
-            good = result->id == (shmresult & ~PAYLOAD_MOD);
-            if (good)
-            {
-                elog(DEBUG1, "delete: [+] tag rel=%d fork=%d blk=%d",
-                        tagPtr->rnode.relNode,
-                        tagPtr->forkNum,
-                        tagPtr->blockNum);
-            }
-        }
-        if (!good)
-        {
-			elog(WARNING, "delete:shmtree did not find tag. hash=%d tree=%d",
-					result->id, shmresult & ~PAYLOAD_MOD);
-        }
-    }
-#endif
-
+#ifdef USE_HASH
 	if (!result)				/* shouldn't happen */
 		elog(ERROR, "shared buffer hash table corrupted");
+#endif
 }
 
 long *

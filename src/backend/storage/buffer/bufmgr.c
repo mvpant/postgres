@@ -53,6 +53,11 @@
 #include "utils/timestamp.h"
 
 
+#define USE_ART 1
+
+// #define USE_HASH 1
+
+
 /* Note: these two macros only work on shared buffers, not local ones! */
 #define BufHdrGetBlock(bufHdr)	((Block) (BufferBlocks + ((Size) (bufHdr)->buf_id) * BLCKSZ))
 #define BufferGetLSN(bufHdr)	(PageGetLSN(BufHdrGetBlock(bufHdr)))
@@ -557,14 +562,24 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 		INIT_BUFFERTAG(newTag, reln->rd_smgr->smgr_rnode.node,
 					   forkNum, blockNum);
 
+#ifdef USE_HASH
 		/* determine its hash code and partition lock ID */
 		newHash = BufTableHashCode(&newTag);
 		newPartitionLock = BufMappingPartitionLock(newHash);
 
 		/* see if the block is in the buffer pool already */
 		LWLockAcquire(newPartitionLock, LW_SHARED);
+#endif
+#ifdef USE_ART
+		LWLockAcquire(SHMTreeLock, LW_SHARED);
+#endif
 		buf_id = BufTableLookup(&newTag, newHash);
+#ifdef USE_HASH
 		LWLockRelease(newPartitionLock);
+#endif
+#ifdef USE_ART
+		LWLockRelease(SHMTreeLock);
+#endif
 
 		/* If not in buffers, initiate prefetch */
 		if (buf_id < 0)
@@ -1000,17 +1015,22 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	BufferDesc *buf;
 	bool		valid;
 	uint32		buf_state;
+	bool		delete_oldtag = false;
 
 	/* create a tag so we can lookup the buffer */
 	INIT_BUFFERTAG(newTag, smgr->smgr_rnode.node, forkNum, blockNum);
 
+#ifdef USE_HASH
 	/* determine its hash code and partition lock ID */
 	newHash = BufTableHashCode(&newTag);
 	newPartitionLock = BufMappingPartitionLock(newHash);
 
 	/* see if the block is in the buffer pool already */
 	LWLockAcquire(newPartitionLock, LW_SHARED);
+#endif
+#ifdef USE_ART
 	LWLockAcquire(SHMTreeLock, LW_SHARED);
+#endif
 	buf_id = BufTableLookup(&newTag, newHash);
 	if (buf_id >= 0)
 	{
@@ -1023,9 +1043,13 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 		valid = PinBuffer(buf, strategy);
 
+#ifdef USE_HASH
 		/* Can release the mapping lock as soon as we've pinned it */
 		LWLockRelease(newPartitionLock);
+#endif
+#ifdef USE_ART
 		LWLockRelease(SHMTreeLock);
+#endif
 
 		*foundPtr = true;
 
@@ -1051,12 +1075,16 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		return buf;
 	}
 
+#ifdef USE_HASH
 	/*
 	 * Didn't find it in the buffer pool.  We'll have to initialize a new
 	 * buffer.  Remember to unlock the mapping lock while doing the work.
 	 */
 	LWLockRelease(newPartitionLock);
+#endif
+#ifdef USE_ART
 	LWLockRelease(SHMTreeLock);
+#endif
 
 	/* Loop here in case we have to try another victim buffer */
 	for (;;)
@@ -1174,6 +1202,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			 * not recompute it here?  Probably not.
 			 */
 			oldTag = buf->tag;
+#ifdef USE_HASH
 			oldHash = BufTableHashCode(&oldTag);
 			oldPartitionLock = BufMappingPartitionLock(oldHash);
 
@@ -1196,13 +1225,21 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				/* only one partition, only one lock */
 				LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
 			}
+#endif
+#ifdef USE_ART
 			LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
+			delete_oldtag = true;
+#endif
 		}
 		else
 		{
+#ifdef USE_HASH
 			/* if it wasn't valid, we need only the new partition */
 			LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
+#endif
+#ifdef USE_ART
 			LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
+#endif
 			/* remember we have no old-partition lock or tag */
 			oldPartitionLock = NULL;
 			/* this just keeps the compiler quiet about uninit variables */
@@ -1228,10 +1265,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			 */
 			UnpinBuffer(buf, true);
 
+#ifdef USE_HASH
 			/* Can give up that buffer's mapping partition lock now */
 			if (oldPartitionLock != NULL &&
 				oldPartitionLock != newPartitionLock)
 				LWLockRelease(oldPartitionLock);
+#endif
 
 			/* remaining code should match code at top of routine */
 
@@ -1239,9 +1278,13 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 			valid = PinBuffer(buf, strategy);
 
+#ifdef USE_HASH
 			/* Can release the mapping lock as soon as we've pinned it */
 			LWLockRelease(newPartitionLock);
+#endif
+#ifdef USE_ART
 			LWLockRelease(SHMTreeLock);
+#endif
 
 			*foundPtr = true;
 
@@ -1284,11 +1327,15 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 		UnlockBufHdr(buf, buf_state);
 		BufTableDelete(&newTag, newHash);
+#ifdef USE_HASH
 		if (oldPartitionLock != NULL &&
 			oldPartitionLock != newPartitionLock)
 			LWLockRelease(oldPartitionLock);
 		LWLockRelease(newPartitionLock);
+#endif
+#ifdef USE_ART
 		LWLockRelease(SHMTreeLock);
+#endif
 		UnpinBuffer(buf, true);
 	}
 
@@ -1316,6 +1363,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	UnlockBufHdr(buf, buf_state);
 
+#ifdef USE_HASH
 	if (oldPartitionLock != NULL)
 	{
 		BufTableDelete(&oldTag, oldHash);
@@ -1324,7 +1372,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	}
 
 	LWLockRelease(newPartitionLock);
+#endif
+#ifdef USE_ART
+	if (delete_oldtag)
+		BufTableDelete(&oldTag, oldHash);
 	LWLockRelease(SHMTreeLock);
+#endif
 
 	/*
 	 * Buffer contents are currently invalid.  Try to get the io_in_progress
