@@ -54,7 +54,6 @@
 
 
 #define USE_ART 1
-#define USE_ART_CACHE 1
 
 // #define USE_HASH 1
 
@@ -558,6 +557,7 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 		uint32		newHash;	/* hash value for newTag */
 		LWLock	   *newPartitionLock;	/* buffer partition lock for it */
 		int			buf_id;
+        SHMTREE *subtree;
 
 		/* create a tag so we can lookup the buffer */
 		INIT_BUFFERTAG(newTag, reln->rd_smgr->smgr_rnode.node,
@@ -575,18 +575,17 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 		newPartitionLock = NULL;
 #endif
 #ifdef USE_ART
-		LWLockAcquire(SHMTreeLock, LW_SHARED);
+        BufTableLockMainTree(LW_SHARED);
+        subtree = BufLookupSubtree(reln->rd_smgr, &newTag);
+        BufTableTryLockTree(subtree, LW_SHARED);
+        BufTableUnLockMainTree();
 #endif
-#ifdef USE_ART_CACHE
-		buf_id = BufTableLookupCached((void *) reln->rd_smgr, &newTag, newHash);
-#else
-		buf_id = BufTableLookup(&newTag, newHash);
-#endif
+		buf_id = BufTableLookup(subtree, &newTag, newHash);
 #ifdef USE_HASH
 		LWLockRelease(newPartitionLock);
 #endif
 #ifdef USE_ART
-		LWLockRelease(SHMTreeLock);
+        BufTableTryUnLockTree(subtree);
 #endif
 
 		/* If not in buffers, initiate prefetch */
@@ -1023,7 +1022,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	BufferDesc *buf;
 	bool		valid;
 	uint32		buf_state;
-	bool		delete_oldtag = false;
+    SHMTREE *newSubtree;
+    SHMTREE *oldSubtree;
 
 	/* create a tag so we can lookup the buffer */
 	INIT_BUFFERTAG(newTag, smgr->smgr_rnode.node, forkNum, blockNum);
@@ -1040,13 +1040,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	newPartitionLock = NULL;
 #endif
 #ifdef USE_ART
-	LWLockAcquire(SHMTreeLock, LW_SHARED);
+    BufTableLockMainTree(LW_SHARED);
+    newSubtree = BufLookupSubtree(smgr, &newTag);
+    BufTableTryLockTree(newSubtree, LW_SHARED);
+    BufTableUnLockMainTree();
 #endif
-#ifdef USE_ART_CACHE
-	buf_id = BufTableLookupCached((void *) smgr, &newTag, newHash);
-#else
-	buf_id = BufTableLookup(&newTag, newHash);
-#endif
+	buf_id = BufTableLookup(newSubtree, &newTag, newHash);
 	if (buf_id >= 0)
 	{
 		/*
@@ -1063,7 +1062,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		LWLockRelease(newPartitionLock);
 #endif
 #ifdef USE_ART
-		LWLockRelease(SHMTreeLock);
+        BufTableTryUnLockTree(newSubtree);
 #endif
 
 		*foundPtr = true;
@@ -1098,7 +1097,17 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	LWLockRelease(newPartitionLock);
 #endif
 #ifdef USE_ART
-	LWLockRelease(SHMTreeLock);
+    /*
+     * if we are here it means we are going to insert new tag
+     * so it is better to make sure newSubtree allocated beforehand
+     */
+    BufTableTryUnLockTree(newSubtree);
+    if (!newSubtree)
+    {
+        BufTableLockMainTree(LW_EXCLUSIVE);
+        newSubtree = BufInstallSubtree(smgr, &newTag);
+        BufTableUnLockMainTree();
+    }
 #endif
 
 	/* Loop here in case we have to try another victim buffer */
@@ -1240,14 +1249,26 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				/* only one partition, only one lock */
 				LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
 			}
-#else
-			// keep it null so if we can safely apply 'delete' 
-			// in tree, hash or both.
-			oldPartitionLock = NULL;
 #endif
 #ifdef USE_ART
-			LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
-			delete_oldtag = true;
+            BufTableLockMainTree(LW_SHARED);
+            oldSubtree = BufLookupSubtreeNoCache(&oldTag);
+			BufTableUnLockMainTree();
+			if (oldSubtree < newSubtree)
+			{
+				BufTableTryLockTree(oldSubtree, LW_EXCLUSIVE);
+				BufTableTryLockTree(newSubtree, LW_EXCLUSIVE);
+			}
+			else if (oldSubtree > newSubtree)
+			{
+				BufTableTryLockTree(newSubtree, LW_EXCLUSIVE);
+				BufTableTryLockTree(oldSubtree, LW_EXCLUSIVE);
+			}
+			else
+			{
+				/* only one partition, only one lock */
+				BufTableTryLockTree(newSubtree, LW_EXCLUSIVE);
+			}
 #endif
 		}
 		else
@@ -1257,7 +1278,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
 #endif
 #ifdef USE_ART
-			LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
+            BufTableTryLockTree(newSubtree, LW_EXCLUSIVE);
+            oldSubtree = NULL;
 #endif
 			/* remember we have no old-partition lock or tag */
 			oldPartitionLock = NULL;
@@ -1265,9 +1287,6 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			oldHash = 0;
 		}
 
-#ifdef USE_ART_CACHE
-		buf_id = BufTableInsertCached((void *) smgr, &newTag, newHash, buf->buf_id);
-#else
 		/*
 		 * Try to make a hashtable entry for the buffer under its new tag.
 		 * This could fail because while we were writing someone else
@@ -1275,8 +1294,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * Note that we have not yet removed the hashtable entry for the old
 		 * tag.
 		 */
-		buf_id = BufTableInsert(&newTag, newHash, buf->buf_id);
-#endif
+		buf_id = BufTableInsert(newSubtree, &newTag, newHash, buf->buf_id);
 
 		if (buf_id >= 0)
 		{
@@ -1294,6 +1312,10 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				oldPartitionLock != newPartitionLock)
 				LWLockRelease(oldPartitionLock);
 #endif
+#ifdef USE_ART
+            if (oldSubtree != NULL && oldSubtree != newSubtree)
+                BufTableTryUnLockTree(oldSubtree);
+#endif
 
 			/* remaining code should match code at top of routine */
 
@@ -1306,7 +1328,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			LWLockRelease(newPartitionLock);
 #endif
 #ifdef USE_ART
-			LWLockRelease(SHMTreeLock);
+			// LWLockRelease(SHMTreeLock);
+            BufTableTryUnLockTree(newSubtree);
 #endif
 
 			*foundPtr = true;
@@ -1349,12 +1372,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			break;
 
 		UnlockBufHdr(buf, buf_state);
-#ifdef USE_ART_CACHE
-		BufTableDeleteCached((void *)smgr, &newTag, newHash);
-#else
-		BufTableDelete(&newTag, newHash);
-#endif
-
+		BufTableDelete(newSubtree, &newTag, newHash);
 #ifdef USE_HASH
 		if (oldPartitionLock != NULL &&
 			oldPartitionLock != newPartitionLock)
@@ -1362,7 +1380,9 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		LWLockRelease(newPartitionLock);
 #endif
 #ifdef USE_ART
-		LWLockRelease(SHMTreeLock);
+        if (oldSubtree != NULL && oldSubtree != newSubtree)
+            BufTableTryUnLockTree(oldSubtree);
+        BufTableTryUnLockTree(newSubtree);
 #endif
 		UnpinBuffer(buf, true);
 	}
@@ -1391,10 +1411,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	UnlockBufHdr(buf, buf_state);
 
+	bool here = false;
 #ifdef USE_HASH
 	if (oldPartitionLock != NULL)
 	{
-		BufTableDelete(&oldTag, oldHash);
+		here = true;
+		BufTableDelete(oldSubtree, &oldTag, oldHash);
 		if (oldPartitionLock != newPartitionLock)
 			LWLockRelease(oldPartitionLock);
 	}
@@ -1402,9 +1424,14 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	LWLockRelease(newPartitionLock);
 #endif
 #ifdef USE_ART
-	if (delete_oldtag && oldPartitionLock == NULL)
-		BufTableDelete(&oldTag, oldHash);
-	LWLockRelease(SHMTreeLock);
+	if (oldSubtree != NULL)
+    {
+        if (!here) // only to test with hash => delete later
+			BufTableDelete(oldSubtree, &oldTag, oldHash);
+        if (oldSubtree != newSubtree)
+            BufTableTryUnLockTree(oldSubtree);
+    }
+    BufTableTryUnLockTree(newSubtree);
 #endif
 
 	/*
@@ -1445,6 +1472,7 @@ InvalidateBuffer(BufferDesc *buf)
 	LWLock	   *oldPartitionLock;	/* buffer partition lock for it */
 	uint32		oldFlags;
 	uint32		buf_state;
+	SHMTREE *oldSubtree;
 
 	/* Save the original buffer tag before dropping the spinlock */
 	oldTag = buf->tag;
@@ -1461,9 +1489,11 @@ InvalidateBuffer(BufferDesc *buf)
 #ifdef USE_HASH
 	oldHash = BufTableHashCode(&oldTag);
 	oldPartitionLock = BufMappingPartitionLock(oldHash);
-#else
-	oldHash = 0;
-	oldPartitionLock = NULL;
+#endif
+#ifdef USE_ART
+	BufTableLockMainTree(LW_SHARED);
+	oldSubtree = BufLookupSubtreeNoCache(&oldTag);
+	BufTableUnLockMainTree();
 #endif
 
 retry:
@@ -1476,7 +1506,8 @@ retry:
 	LWLockAcquire(oldPartitionLock, LW_EXCLUSIVE);
 #endif
 #ifdef USE_ART
-	LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
+	// LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
+	BufTableTryLockTree(oldSubtree, LW_EXCLUSIVE);
 #endif
 
 	/* Re-lock the buffer header */
@@ -1490,7 +1521,8 @@ retry:
 		LWLockRelease(oldPartitionLock);
 #endif
 #ifdef USE_ART
-		LWLockRelease(SHMTreeLock);
+		// LWLockRelease(SHMTreeLock);
+		BufTableTryUnLockTree(oldSubtree);
 #endif
 		return;
 	}
@@ -1511,7 +1543,8 @@ retry:
 		LWLockRelease(oldPartitionLock);
 #endif
 #ifdef USE_ART
-		LWLockRelease(SHMTreeLock);
+		// LWLockRelease(SHMTreeLock);
+		BufTableTryUnLockTree(oldSubtree);
 #endif
 		/* safety check: should definitely not be our *own* pin */
 		if (GetPrivateRefCount(BufferDescriptorGetBuffer(buf)) > 0)
@@ -1533,7 +1566,7 @@ retry:
 	 * Remove the buffer from the lookup hashtable, if it was in there.
 	 */
 	if (oldFlags & BM_TAG_VALID)
-		BufTableDelete(&oldTag, oldHash);
+		BufTableDelete(oldSubtree, &oldTag, oldHash);
 
 	/*
 	 * Done with mapping lock.
@@ -1542,7 +1575,8 @@ retry:
 	LWLockRelease(oldPartitionLock);
 #endif
 #ifdef USE_ART
-	LWLockRelease(SHMTreeLock);
+	// LWLockRelease(SHMTreeLock);
+	BufTableTryUnLockTree(oldSubtree);
 #endif
 
 	/*

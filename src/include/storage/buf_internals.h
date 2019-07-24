@@ -323,12 +323,16 @@ extern bool have_free_buffer(void);
 extern Size BufTableShmemSize(int size);
 extern void InitBufTable(int size);
 extern uint32 BufTableHashCode(BufferTag *tagPtr);
-extern int	BufTableLookup(BufferTag *tagPtr, uint32 hashcode);
-extern int	BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id);
-extern void BufTableDelete(BufferTag *tagPtr, uint32 hashcode);
-extern int	BufTableLookupCached(void *opaque, BufferTag *tagPtr, uint32 hashcode);
-extern int	BufTableInsertCached(void *opaque, BufferTag *tagPtr, uint32 hashcode, int buf_id);
-extern void BufTableDeleteCached(void *opaque, BufferTag *tagPtr, uint32 hashcode);
+extern int	BufTableLookup(SHMTREE *tree, BufferTag *tagPtr, uint32 hashcode);
+extern int	BufTableInsert(SHMTREE *tree, BufferTag *tagPtr, uint32 hashcode, int buf_id);
+extern void BufTableDelete(SHMTREE *tree, BufferTag *tagPtr, uint32 hashcode);
+extern void BufTableLockMainTree(LWLockMode mode);
+extern void BufTableUnLockMainTree(void);
+extern void BufTableTryLockTree(SHMTREE *tree, LWLockMode mode);
+extern void BufTableTryUnLockTree(SHMTREE *tree);
+extern SHMTREE * BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr);
+extern SHMTREE * BufLookupSubtree(SMgrRelation smgr, BufferTag *tagPtr);
+extern SHMTREE * BufLookupSubtreeNoCache(BufferTag *tagPtr);
 extern long * BufTreeStats(void);
 
 /* localbuf.c */

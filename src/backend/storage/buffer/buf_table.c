@@ -43,9 +43,29 @@ static SHMTREEBLK *SharedBlkTrees;
 // #define VALIDATE_ART 1
 
 #define USE_ART 1
-#define USE_ART_CACHE 1
 
 // #define USE_HASH 1
+
+
+void BufTableLockMainTree(LWLockMode mode)
+{
+	LWLockAcquire(shmtree_getlock(SharedBufTree), mode);
+}
+
+void BufTableUnLockMainTree()
+{
+	LWLockRelease(shmtree_getlock(SharedBufTree));
+}
+
+void BufTableTryLockTree(SHMTREE *tree, LWLockMode mode)
+{
+	if (tree) LWLockAcquire(shmtree_getlock(tree), mode);
+}
+
+void BufTableTryUnLockTree(SHMTREE *tree)
+{
+	if (tree) LWLockRelease(shmtree_getlock(tree));
+}
 
 /*
  * Estimate space needed for mapping hashtable
@@ -117,78 +137,13 @@ BufTableHashCode(BufferTag *tagPtr)
  * Caller must hold at least share lock on BufMappingLock for tag's partition
  */
 int
-BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
-{
-	return BufTableLookupCached(NULL, tagPtr, hashcode);
-}
-
-/*
- * BufTableInsert
- *		Insert a hashtable entry for given tag and buffer ID,
- *		unless an entry already exists for that tag
- *
- * Returns -1 on successful insertion.  If a conflicting entry exists
- * already, returns the buffer ID in that entry.
- *
- * Caller must hold exclusive lock on BufMappingLock for tag's partition
- */
-int
-BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
-{
-	return BufTableInsertCached(NULL, tagPtr, hashcode, buf_id);
-}
-
-/*
- * BufTableDelete
- *		Delete the hashtable entry for given tag (which must exist)
- *
- * Caller must hold exclusive lock on BufMappingLock for tag's partition
- */
-void
-BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
-{
-	BufTableDeleteCached(NULL, tagPtr, hashcode);
-}
-
-long *
-BufTreeStats(void)
-{
-	return shmtree_nodes_used(SharedBufTree, SharedBlkTrees);
-}
-
-static SHMTREE *
-LookupCachedTree(SMgrRelation smgr, BufferTag *tagPtr)
-{
-	SHMTREE *subtree;
-#ifdef USE_ART_CACHE
-	if (smgr)
-	{
-		subtree = smgr->cached_forks[tagPtr->forkNum];
-		if (!subtree)
-		{
-			subtree = (SHMTREE *) shmtree_search(
-				SharedBufTree, (const uint8_t *) tagPtr);
-			smgr->cached_forks[tagPtr->forkNum] = subtree;
-		}
-	}
-	else
-#endif
-	subtree = (SHMTREE *) shmtree_search(
-		SharedBufTree, (const uint8_t *) tagPtr);
-
-	return subtree;
-}
-
-int
-BufTableLookupCached(void *opaque, BufferTag *tagPtr, uint32 hashcode)
+BufTableLookup(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
 #ifdef USE_ART
 	bool good = false;
-	SHMTREE *subtree;
 	uintptr_t shmresult = 0;
 
-	subtree = LookupCachedTree((SMgrRelation) opaque, tagPtr);
 	if (subtree)
 	{
 		shmresult = (uintptr_t) shmtree_search(
@@ -243,8 +198,18 @@ BufTableLookupCached(void *opaque, BufferTag *tagPtr, uint32 hashcode)
 #endif
 }
 
+/*
+ * BufTableInsert
+ *		Insert a hashtable entry for given tag and buffer ID,
+ *		unless an entry already exists for that tag
+ *
+ * Returns -1 on successful insertion.  If a conflicting entry exists
+ * already, returns the buffer ID in that entry.
+ *
+ * Caller must hold exclusive lock on BufMappingLock for tag's partition
+ */
 int
-BufTableInsertCached(void *opaque, BufferTag *tagPtr, uint32 hashcode, int buf_id)
+BufTableInsert(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode, int buf_id)
 {
 	BufferLookupEnt *result;
 	bool		found;
@@ -255,18 +220,9 @@ BufTableInsertCached(void *opaque, BufferTag *tagPtr, uint32 hashcode, int buf_i
 #ifdef USE_ART
 	bool good = false;
 	uintptr_t shmresult;
-	SHMTREE *subtree;
 	uint64_t payload = PAYLOAD_MOD | buf_id;
 
-	subtree = LookupCachedTree((SMgrRelation) opaque, tagPtr);
-	if (!subtree) // didnt find subtree
-	{
-		subtree = alloc_blktree(SharedBlkTrees);
-		shmresult = (uintptr_t) shmtree_insert(
-			SharedBufTree, (const uint8_t *) tagPtr, (void *) subtree);
-		//todo check no collision, if it is => dealloc?
-		Assert(shmresult == 0);
-	}
+	Assert(subtree);
 
 	shmresult = (uintptr_t) shmtree_insert(
 		subtree, (const uint8_t *) &tagPtr->blockNum, (void *) payload);
@@ -322,17 +278,20 @@ BufTableInsertCached(void *opaque, BufferTag *tagPtr, uint32 hashcode, int buf_i
 #endif
 }
 
+/*
+ * BufTableDelete
+ *		Delete the hashtable entry for given tag (which must exist)
+ *
+ * Caller must hold exclusive lock on BufMappingLock for tag's partition
+ */
 void
-BufTableDeleteCached(void *opaque, BufferTag *tagPtr, uint32 hashcode)
+BufTableDelete(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
 	bool good = false;
 	uintptr_t shmresult;
 
 #ifdef USE_ART
-	SHMTREE *subtree;
-
-	subtree = LookupCachedTree((SMgrRelation) opaque, tagPtr);
 	Assert(subtree);
 
 	shmresult = (uintptr_t) shmtree_delete(
@@ -365,4 +324,63 @@ BufTableDeleteCached(void *opaque, BufferTag *tagPtr, uint32 hashcode)
 	if (!result)				/* shouldn't happen */
 		elog(ERROR, "shared buffer hash table corrupted");
 #endif
+}
+
+long *
+BufTreeStats(void)
+{
+	return shmtree_nodes_used(SharedBufTree, SharedBlkTrees);
+}
+
+SHMTREE *
+BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr)
+{
+	SHMTREE *subtree;
+	uintptr_t shmresult;
+
+	subtree = smgr->cached_forks[tagPtr->forkNum];
+	if (!subtree)
+	{
+		subtree = alloc_blktree(SharedBlkTrees);
+		shmresult = (uintptr_t) shmtree_insert(
+			SharedBufTree, (const uint8_t *) tagPtr, (void *) subtree);
+		// check no collision appeared, if it is => dealloc?
+		if (shmresult != 0)
+		{
+			dealloc_blktree(SharedBlkTrees, subtree);
+			subtree = (SHMTREE *) shmresult;
+			elog(WARNING, "install:subtree collision.");
+		}
+		smgr->cached_forks[tagPtr->forkNum] = subtree;
+	}
+	return subtree;
+}
+
+SHMTREE *
+BufLookupSubtree(SMgrRelation smgr, BufferTag *tagPtr)
+{
+	SHMTREE *subtree;
+	
+	// todo: need somehow invalidate subtree (add & check flag inside art_tree?)
+	// but first recycle functionaly required
+	subtree = smgr->cached_forks[tagPtr->forkNum];
+	if (!subtree)
+	{
+		subtree = (SHMTREE *) shmtree_search(
+			SharedBufTree, (const uint8_t *) tagPtr);
+		smgr->cached_forks[tagPtr->forkNum] = subtree;
+	}
+
+	return subtree;
+}
+
+SHMTREE *
+BufLookupSubtreeNoCache(BufferTag *tagPtr)
+{
+	SHMTREE *subtree;
+	
+	subtree = (SHMTREE *) shmtree_search(
+		SharedBufTree, (const uint8_t *) tagPtr);
+
+	return subtree;
 }

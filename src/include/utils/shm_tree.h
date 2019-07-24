@@ -2,6 +2,8 @@
 #ifndef SHMTREE_H
 #define SHMTREE_H
 
+#include "storage/lwlock.h"
+
 /*
  * Space allocation function for a tree --- designed to match malloc().
  * Note: there is no free function API; can't destroy a tree unless you
@@ -47,6 +49,7 @@ extern Size shmtree_get_blktree_size(void);
 extern void shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree);
 extern SHMTREE * alloc_blktree(SHMTREEBLK *tblk);
 extern void dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt);
+extern LWLock * shmtree_getlock(SHMTREE *shmt);
 
 
 #endif

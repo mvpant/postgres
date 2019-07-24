@@ -147,6 +147,7 @@ struct SHMTREE
     Size keysize;   /* hash key length in bytes */
     Size entrysize; /* total user element size in bytes */
     char *treename;
+    uintptr_t shm_addr;
     bool isshared;  /* true if tree is in shared memory */
 };
 
@@ -403,6 +404,12 @@ shmtree_get_blktree_size()
 	return size;
 }
 
+LWLock *
+shmtree_getlock(SHMTREE *shmt)
+{
+    return &shmt->tree->lock;
+}
+
 void
 shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree)
 {
@@ -484,6 +491,9 @@ alloc_blktree(SHMTREEBLK *tblk)
 	node_shmt =
 		(uintptr_t *) (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
 	shmt = (SHMTREE *) (*node_shmt);
+    // save spot in shared memory, that can be used for deallocation
+    shmt->shm_addr = (uintptr_t) node_shmt;
+	Assert(shmt->shm_addr != 0);
 	return shmt;
 }
 
@@ -491,8 +501,14 @@ void
 dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
 {
 	NODEELEMENT *tmpElement;
+	char *ptr;
+	uintptr_t *node_shmt;
 
-	tmpElement = NODEELEMENT_LINK(shmt);
+    // maybe fix this weird alloc scheme later?
+	tmpElement = NODEELEMENT_LINK(shmt->shm_addr);
+    ptr = (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
+    node_shmt = (uintptr_t *) ptr;
+    Assert(*node_shmt == (uintptr_t) shmt);
 
 	SpinLockAcquire(&tblk->mutex);
 
