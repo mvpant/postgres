@@ -331,5 +331,5 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 long *
 BufTreeStats(void)
 {
-    return shmtree_nodes_used(SharedBufTree);
+	return shmtree_nodes_used(SharedBufTree, SharedBlkTrees);
 }
