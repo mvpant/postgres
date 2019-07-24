@@ -13,6 +13,8 @@ typedef struct SHMTREEHDR SHMTREEHDR;
 
 typedef struct SHMTREE SHMTREE;
 
+typedef struct SHMTREEBLK SHMTREEBLK;
+
 typedef struct SHMTREECTL {
     Size keysize;        /* hash key length in bytes */
     Size entrysize;      /* total user element size in bytes */
@@ -40,5 +42,11 @@ extern void shmtree_nodes_proportion(SHMTREE *shmt);
 extern Size shmtree_estimate_size(Size keysize);
 extern Size shmtree_get_shared_size(SHMTREECTL *info, int flags);
 extern long * shmtree_nodes_used(SHMTREE *shmt);
+
+extern Size shmtree_get_blktree_size(void);
+extern void shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree);
+extern SHMTREE * alloc_blktree(SHMTREEBLK *tblk);
+extern void dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt);
+
 
 #endif

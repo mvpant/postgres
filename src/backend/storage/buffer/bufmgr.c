@@ -55,7 +55,7 @@
 
 #define USE_ART 1
 
-// #define USE_HASH 1
+#define USE_HASH 1
 
 
 /* Note: these two macros only work on shared buffers, not local ones! */
@@ -1225,6 +1225,10 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				/* only one partition, only one lock */
 				LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
 			}
+#else
+			// keep it null so if we can safely apply 'delete' 
+			// in tree, hash or both.
+			oldPartitionLock = NULL;
 #endif
 #ifdef USE_ART
 			LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
@@ -1374,7 +1378,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	LWLockRelease(newPartitionLock);
 #endif
 #ifdef USE_ART
-	if (delete_oldtag)
+	if (delete_oldtag && oldPartitionLock == NULL)
 		BufTableDelete(&oldTag, oldHash);
 	LWLockRelease(SHMTreeLock);
 #endif

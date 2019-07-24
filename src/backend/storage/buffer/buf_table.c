@@ -36,13 +36,15 @@ static HTAB *SharedBufHash;
 
 static SHMTREE *SharedBufTree;
 
+static SHMTREEBLK *SharedBlkTrees;
+
 #define PAYLOAD_MOD 0xF0000000
 
-// #define VALIDATE_ART 1
+#define VALIDATE_ART 1
 
 #define USE_ART 1
 
-// #define USE_HASH 1
+#define USE_HASH 1
 
 /*
  * Estimate space needed for mapping hashtable
@@ -66,6 +68,7 @@ InitBufTable(int size)
 {
 	HASHCTL		info;
     SHMTREECTL  tinfo;
+	bool found;
 
 	/* assume no locking is needed yet */
 
@@ -79,11 +82,16 @@ InitBufTable(int size)
 								  &info,
 								  HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
 
-	tinfo.keysize = sizeof(BufferTag);
+	tinfo.keysize = sizeof(BufferTag) - sizeof(BlockNumber);
 	tinfo.entrysize = sizeof(BufferLookupEnt);
 	SharedBufTree = ShmemInitTree("Shared Buffer Lookup Tree",
 								  &tinfo,
 								  SHMTREE_ELEM);
+
+	SharedBlkTrees = ShmemInitStruct("Shared Buffer BlkTrees",
+							   shmtree_get_blktree_size(),
+							   &found);
+	shmtree_build_blktree(SharedBlkTrees, SharedBufTree);
 }
 
 /*
@@ -113,10 +121,18 @@ BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
 	BufferLookupEnt *result;
 #ifdef USE_ART
 	bool good = false;
-	uintptr_t shmresult;
+	SHMTREE *subtree;
+	uintptr_t shmresult = 0;
 
-	shmresult = (uintptr_t) shmtree_search(
+	// find subtree
+	subtree = (SHMTREE *) shmtree_search(
 		SharedBufTree, (const uint8_t *) tagPtr);
+
+	if (subtree)
+	{
+		shmresult = (uintptr_t) shmtree_search(
+			subtree, (const uint8_t *) &tagPtr->blockNum);
+	}
 #endif
 #ifdef USE_HASH
 	result = (BufferLookupEnt *)
@@ -142,7 +158,7 @@ BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
 		{
 			good = result->id == (shmresult & ~PAYLOAD_MOD);
 			if (!good) {
-				elog(WARNING, "lookup:shmtree mismatch. hash=%d tree=%d",
+				elog(WARNING, "lookup:shmtree mismatch. hash=%d tree=%zu",
 					result->id, shmresult & ~PAYLOAD_MOD);
 			}
 		}
@@ -188,10 +204,24 @@ BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
 #ifdef USE_ART
 	bool good = false;
 	uintptr_t shmresult;
+	SHMTREE *subtree;
 	uint64_t payload = PAYLOAD_MOD | buf_id;
 
+	// find subtree
+	subtree = (SHMTREE *) shmtree_search(
+		SharedBufTree, (const uint8_t *) tagPtr);
+
+	if (!subtree) // didnt find subtree
+	{
+		subtree = alloc_blktree(SharedBlkTrees);
+		shmresult = (uintptr_t) shmtree_insert(
+			SharedBufTree, (const uint8_t *) tagPtr, (void *) subtree);
+		//todo check no collision, if it is => dealloc?
+		Assert(shmresult == 0);
+	}
+
 	shmresult = (uintptr_t) shmtree_insert(
-		SharedBufTree, (const uint8_t *) tagPtr, (void *) payload);
+		subtree, (const uint8_t *) &tagPtr->blockNum, (void *) payload);
 #endif
 #ifdef USE_HASH
 	result = (BufferLookupEnt *)
@@ -210,7 +240,7 @@ BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
 			good = result->id == (shmresult & ~PAYLOAD_MOD);
 			if (!good)
 			{
-				elog(WARNING, "insert:shmtree mismatch. hash=%d told=%d tnew=%d",
+				elog(WARNING, "insert:shmtree mismatch. hash=%d told=%zu tnew=%d",
 						result->id, shmresult & ~PAYLOAD_MOD, buf_id);
 			}
 		}
@@ -258,8 +288,16 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 	uintptr_t shmresult;
 
 #ifdef USE_ART
-	shmresult = (uintptr_t) shmtree_delete(
+	SHMTREE *subtree;
+
+	// find subtree
+	subtree = (SHMTREE *) shmtree_search(
 		SharedBufTree, (const uint8_t *) tagPtr);
+
+	Assert(subtree);
+
+	shmresult = (uintptr_t) shmtree_delete(
+		subtree, (const uint8_t *) &tagPtr->blockNum);
 #endif
 #ifdef USE_HASH
 	result = (BufferLookupEnt *)
@@ -279,7 +317,7 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 		good = result->id == (shmresult & ~PAYLOAD_MOD);
 		if (!good)
 		{
-			elog(WARNING, "delete:shmtree mismatch. hash=%d tree=%d",
+			elog(WARNING, "delete:shmtree mismatch. hash=%d tree=%zu",
 					result->id, shmresult & ~PAYLOAD_MOD);
 		}
 	}

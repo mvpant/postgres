@@ -8,6 +8,7 @@
 // #include "access/xact.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
+#include "storage/lwlock.h"
 // #include "utils/dynahash.h"
 #include "utils/memutils.h"
 #include "storage/bufmgr.h"
@@ -84,6 +85,7 @@ typedef union NodePointer {
 } NodePointer;
 
 typedef struct art_tree {
+	LWLock lock;
     art_node *root;
     uint64 size;
     uint32 size4;
@@ -109,6 +111,13 @@ typedef struct FreeListNode
 	long		nentries;
 	NODEELEMENT *freeList;
 } FreeListNode;
+
+typedef struct SHMTREEBLK
+{
+	slock_t		mutex;
+	long		nentries;
+	NODEELEMENT *freeList;
+} SHMTREEBLK;
 
 /*
  * Header structure for a tree --- contains all changeable info
@@ -177,6 +186,7 @@ static MemoryContext CurrentTreeCxt = NULL;
 #define NODE48_NELEM  (1 << 14)
 #define NODE256_NELEM  (1 << 13)
 #define NODELEAF_NELEM (NBuffers << 1)
+#define NODESUBTREE_NELEM 200
 
 static void *
 TreeAlloc(Size size)
@@ -381,6 +391,119 @@ shmtree_get_shared_size(SHMTREECTL *info, int flags)
 }
 
 Size
+shmtree_get_blktree_size()
+{
+	Size size, elementSize;
+	size = MAXALIGN(sizeof(SHMTREEBLK));
+	// we will reuse existing shmtreehdr of sharedbuftree...
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + sizeof(SHMTREE *) + sizeof(art_tree);
+	size = add_size(size, mul_size(elementSize, NODESUBTREE_NELEM));
+	return size;
+}
+
+void
+shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree)
+{
+	// chain and init shmtrees using original copy(share freelists)
+	NODEELEMENT *firstElement;
+	NODEELEMENT *tmpElement;
+	NODEELEMENT *prevElement;
+	int i;
+	int nelem = NODESUBTREE_NELEM;
+	Size elementSize;
+
+	SHMTREE *shmt;
+	SHMTREEHDR *shmth = shrbuftree->tctl;
+	uintptr_t *node_shmt;
+	char *treename = "blktree";
+	char *ptr;
+	int trancheid = LWLockNewTrancheId();
+
+	CurrentTreeCxt = TopMemoryContext;
+
+	elementSize =
+		MAXALIGN(sizeof(NODEELEMENT)) + sizeof(SHMTREE *) + sizeof(art_tree);
+
+	firstElement =
+		(NODEELEMENT *) (((char *) tblk) + MAXALIGN(sizeof(SHMTREEBLK)));
+
+	prevElement = NULL;
+	tmpElement = firstElement;
+	for (i = 0; i < nelem; i++)
+	{
+		// alloc non-shared, but forked shmtree
+		shmt = (SHMTREE *) TreeAlloc(sizeof(SHMTREE) + strlen(treename) + 1);
+		MemSet(shmt, 0, sizeof(SHMTREE));
+		shmt->treename = (char *) (shmt + 1);
+		strcpy(shmt->treename, treename);
+		shmt->keysize = sizeof(BlockNumber);
+		shmt->tctl = shmth;
+
+		// skip nodelement, next is shmtree pointer
+		ptr = (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
+		node_shmt = (uintptr_t *) ptr;
+		*node_shmt = (uintptr_t) shmt;
+
+		ptr += sizeof(SHMTREE *);
+		shmt->tree = (art_tree *) ptr;
+		MemSet(shmt->tree, 0, sizeof(art_tree));
+		shmt->isshared = true;
+
+		LWLockInitialize(&shmt->tree->lock, trancheid);
+		LWLockRegisterTranche(shmt->tree->lock.tranche, "blktree");
+
+		tmpElement->link = prevElement;
+		prevElement = tmpElement;
+		tmpElement = (NODEELEMENT *) (((char *) tmpElement) + elementSize);
+	}
+
+	SpinLockInit(&tblk->mutex);
+	tblk->freeList = prevElement;
+	tblk->nentries = NODESUBTREE_NELEM;
+}
+
+SHMTREE *
+alloc_blktree(SHMTREEBLK *tblk)
+{
+	NODEELEMENT *tmpElement;
+
+	SHMTREE *shmt;
+	uintptr_t *node_shmt;
+	SpinLockAcquire(&tblk->mutex);
+
+	tmpElement = tblk->freeList;
+	tblk->freeList = tmpElement->link;
+	tblk->nentries--;
+
+	Assert(tblk->nentries >= 0);
+
+	SpinLockRelease(&tblk->mutex);
+
+	node_shmt =
+		(uintptr_t *) (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
+	shmt = (SHMTREE *) (*node_shmt);
+	return shmt;
+}
+
+void
+dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
+{
+	NODEELEMENT *tmpElement;
+
+	tmpElement = NODEELEMENT_LINK(shmt);
+
+	SpinLockAcquire(&tblk->mutex);
+
+	tmpElement->link = tblk->freeList;
+	tblk->freeList = tmpElement;
+	tblk->nentries++;
+
+	Assert(tblk->nentries <= NODESUBTREE_NELEM);
+
+	SpinLockRelease(&tblk->mutex);
+}
+
+Size
 shmtree_estimate_size(Size keysize)
 {
 	Size		size;
@@ -402,6 +525,8 @@ shmtree_estimate_size(Size keysize)
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_leaf)) + keysize;
 	size = add_size(size, mul_size(NODELEAF_NELEM, elementSize));
+
+	size = add_size(size, shmtree_get_blktree_size());
 
 	return size;
 }
