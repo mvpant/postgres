@@ -1010,6 +1010,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	/* see if the block is in the buffer pool already */
 	LWLockAcquire(newPartitionLock, LW_SHARED);
+	LWLockAcquire(SHMTreeLock, LW_SHARED);
 	buf_id = BufTableLookup(&newTag, newHash);
 	if (buf_id >= 0)
 	{
@@ -1024,6 +1025,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 		/* Can release the mapping lock as soon as we've pinned it */
 		LWLockRelease(newPartitionLock);
+		LWLockRelease(SHMTreeLock);
 
 		*foundPtr = true;
 
@@ -1054,6 +1056,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * buffer.  Remember to unlock the mapping lock while doing the work.
 	 */
 	LWLockRelease(newPartitionLock);
+	LWLockRelease(SHMTreeLock);
 
 	/* Loop here in case we have to try another victim buffer */
 	for (;;)
@@ -1193,11 +1196,13 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				/* only one partition, only one lock */
 				LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
 			}
+			LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
 		}
 		else
 		{
 			/* if it wasn't valid, we need only the new partition */
 			LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
+			LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
 			/* remember we have no old-partition lock or tag */
 			oldPartitionLock = NULL;
 			/* this just keeps the compiler quiet about uninit variables */
@@ -1236,6 +1241,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 			/* Can release the mapping lock as soon as we've pinned it */
 			LWLockRelease(newPartitionLock);
+			LWLockRelease(SHMTreeLock);
 
 			*foundPtr = true;
 
@@ -1282,6 +1288,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			oldPartitionLock != newPartitionLock)
 			LWLockRelease(oldPartitionLock);
 		LWLockRelease(newPartitionLock);
+		LWLockRelease(SHMTreeLock);
 		UnpinBuffer(buf, true);
 	}
 
@@ -1317,6 +1324,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	}
 
 	LWLockRelease(newPartitionLock);
+	LWLockRelease(SHMTreeLock);
 
 	/*
 	 * Buffer contents are currently invalid.  Try to get the io_in_progress
@@ -1379,6 +1387,7 @@ retry:
 	 * association.
 	 */
 	LWLockAcquire(oldPartitionLock, LW_EXCLUSIVE);
+	LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
 
 	/* Re-lock the buffer header */
 	buf_state = LockBufHdr(buf);
@@ -1388,6 +1397,7 @@ retry:
 	{
 		UnlockBufHdr(buf, buf_state);
 		LWLockRelease(oldPartitionLock);
+		LWLockRelease(SHMTreeLock);
 		return;
 	}
 
@@ -1404,6 +1414,7 @@ retry:
 	{
 		UnlockBufHdr(buf, buf_state);
 		LWLockRelease(oldPartitionLock);
+		LWLockRelease(SHMTreeLock);
 		/* safety check: should definitely not be our *own* pin */
 		if (GetPrivateRefCount(BufferDescriptorGetBuffer(buf)) > 0)
 			elog(ERROR, "buffer is pinned in InvalidateBuffer");
@@ -1430,6 +1441,7 @@ retry:
 	 * Done with mapping lock.
 	 */
 	LWLockRelease(oldPartitionLock);
+	LWLockRelease(SHMTreeLock);
 
 	/*
 	 * Insert the buffer at the head of the list of free buffers.

@@ -1064,7 +1064,9 @@ recursive_insert(SHMTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
         // Check if we are updating an existing value
         if (!leaf_matches(l, key, key_len, depth)) {
             void *old_val = l->value;
-            l->value = value;
+			// todo: add command variety like in hashtable e.g. HASH_ENTER
+			// instead of simple in-place update
+			// l->value = value;
             *old = 1;
             return old_val;
         }

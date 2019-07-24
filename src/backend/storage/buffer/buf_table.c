@@ -144,7 +144,8 @@ BufTableLookup(BufferTag *tagPtr, uint32 hashcode)
         }
         if (!good)
         {
-            elog(WARNING, "lookup:shmtree did not find tag.");
+			elog(WARNING, "lookup:shmtree did not find tag. hash=%d tree=%d",
+				result->id, shmresult & ~PAYLOAD_MOD);
         }
     }
 
@@ -210,7 +211,8 @@ BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id)
         }
         if (!good)
         {
-            elog(WARNING, "insert:shmtree did not find tag.");
+			elog(WARNING, "insert:shmtree did not find tag. hash=%d told=%d tnew=%d",
+					result->id, shmresult & ~PAYLOAD_MOD, buf_id);
         }
     }
 
@@ -258,7 +260,8 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
         }
         if (!good)
         {
-            elog(WARNING, "delete:shmtree did not find tag.");
+			elog(WARNING, "delete:shmtree did not find tag. hash=%d tree=%d",
+					result->id, shmresult & ~PAYLOAD_MOD);
         }
     }
 
