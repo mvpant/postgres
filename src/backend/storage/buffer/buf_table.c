@@ -40,11 +40,11 @@ static SHMTREEBLK *SharedBlkTrees;
 
 #define PAYLOAD_MOD 0xF0000000
 
-#define VALIDATE_ART 1
+// #define VALIDATE_ART 1
 
 #define USE_ART 1
 
-#define USE_HASH 1
+// #define USE_HASH 1
 
 /*
  * Estimate space needed for mapping hashtable

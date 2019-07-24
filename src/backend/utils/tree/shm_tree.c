@@ -186,7 +186,7 @@ static MemoryContext CurrentTreeCxt = NULL;
 #define NODE48_NELEM  (1 << 14)
 #define NODE256_NELEM  (1 << 13)
 #define NODELEAF_NELEM (NBuffers << 1)
-#define NODESUBTREE_NELEM 200
+#define NODESUBTREE_NELEM 10000
 
 static void *
 TreeAlloc(Size size)

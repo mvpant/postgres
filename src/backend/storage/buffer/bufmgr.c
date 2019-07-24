@@ -55,7 +55,7 @@
 
 #define USE_ART 1
 
-#define USE_HASH 1
+// #define USE_HASH 1
 
 
 /* Note: these two macros only work on shared buffers, not local ones! */
@@ -569,6 +569,9 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 
 		/* see if the block is in the buffer pool already */
 		LWLockAcquire(newPartitionLock, LW_SHARED);
+#else
+		newHash = 0;
+		newPartitionLock = NULL;
 #endif
 #ifdef USE_ART
 		LWLockAcquire(SHMTreeLock, LW_SHARED);
@@ -1027,6 +1030,9 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	/* see if the block is in the buffer pool already */
 	LWLockAcquire(newPartitionLock, LW_SHARED);
+#else
+	newHash = 0;
+	newPartitionLock = NULL;
 #endif
 #ifdef USE_ART
 	LWLockAcquire(SHMTreeLock, LW_SHARED);
@@ -1434,8 +1440,13 @@ InvalidateBuffer(BufferDesc *buf)
 	 * worth storing the hashcode in BufferDesc so we need not recompute it
 	 * here?  Probably not.
 	 */
+#ifdef USE_HASH
 	oldHash = BufTableHashCode(&oldTag);
 	oldPartitionLock = BufMappingPartitionLock(oldHash);
+#else
+	oldHash = 0;
+	oldPartitionLock = NULL;
+#endif
 
 retry:
 
@@ -1443,8 +1454,12 @@ retry:
 	 * Acquire exclusive mapping lock in preparation for changing the buffer's
 	 * association.
 	 */
+#ifdef USE_HASH
 	LWLockAcquire(oldPartitionLock, LW_EXCLUSIVE);
+#endif
+#ifdef USE_ART
 	LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
+#endif
 
 	/* Re-lock the buffer header */
 	buf_state = LockBufHdr(buf);
@@ -1453,8 +1468,12 @@ retry:
 	if (!BUFFERTAGS_EQUAL(buf->tag, oldTag))
 	{
 		UnlockBufHdr(buf, buf_state);
+#ifdef USE_HASH
 		LWLockRelease(oldPartitionLock);
+#endif
+#ifdef USE_ART
 		LWLockRelease(SHMTreeLock);
+#endif
 		return;
 	}
 
@@ -1470,8 +1489,12 @@ retry:
 	if (BUF_STATE_GET_REFCOUNT(buf_state) != 0)
 	{
 		UnlockBufHdr(buf, buf_state);
+#ifdef USE_HASH
 		LWLockRelease(oldPartitionLock);
+#endif
+#ifdef USE_ART
 		LWLockRelease(SHMTreeLock);
+#endif
 		/* safety check: should definitely not be our *own* pin */
 		if (GetPrivateRefCount(BufferDescriptorGetBuffer(buf)) > 0)
 			elog(ERROR, "buffer is pinned in InvalidateBuffer");
@@ -1497,8 +1520,12 @@ retry:
 	/*
 	 * Done with mapping lock.
 	 */
+#ifdef USE_HASH
 	LWLockRelease(oldPartitionLock);
+#endif
+#ifdef USE_ART
 	LWLockRelease(SHMTreeLock);
+#endif
 
 	/*
 	 * Insert the buffer at the head of the list of free buffers.
