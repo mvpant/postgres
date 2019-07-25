@@ -46,6 +46,11 @@ static SHMTREEBLK *SharedBlkTrees;
 
 // #define USE_HASH 1
 
+SHMTREE *
+BufTableGetMainTree()
+{
+	return SharedBufTree;
+}
 
 void BufTableLockMainTree(LWLockMode mode)
 {
@@ -305,10 +310,12 @@ BufTableDelete(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 									HASH_REMOVE,
 									NULL);
 #endif
+#ifdef USE_ART
 	if (!shmresult)
 	{
 		elog(WARNING, "delete:shmtree corrupted");
 	}
+#endif
 #ifdef VALIDATE_ART
 	else
 	{
@@ -341,19 +348,36 @@ BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 	subtree = smgr->cached_forks[tagPtr->forkNum];
 	if (!subtree)
 	{
-		subtree = alloc_blktree(SharedBlkTrees);
+		subtree = shmtree_alloc_blktree(SharedBlkTrees);
 		shmresult = (uintptr_t) shmtree_insert(
 			SharedBufTree, (const uint8_t *) tagPtr, (void *) subtree);
 		// check no collision appeared, if it is => dealloc?
 		if (shmresult != 0)
 		{
-			dealloc_blktree(SharedBlkTrees, subtree);
+			shmtree_dealloc_blktree(SharedBlkTrees, subtree);
 			subtree = (SHMTREE *) shmresult;
 			elog(WARNING, "install:subtree collision.");
 		}
 		smgr->cached_forks[tagPtr->forkNum] = subtree;
 	}
 	return subtree;
+}
+
+void
+BufUnistallSubtree(BufferTag *tagPtr)
+{
+	SHMTREE *subtree;
+
+	subtree = (SHMTREE *) shmtree_delete(
+		SharedBufTree, (const uint8_t *) tagPtr);
+
+	if (subtree)
+	{
+		shmtree_dealloc_blktree(SharedBlkTrees, subtree);
+	}
+	// todo: send message to backends to invalidate cache...
+	// or it is(probably) already done in CacheInvalidateSmgr(rnode);
+	// need to check that functionality, so we can move towards subtree recycling
 }
 
 SHMTREE *

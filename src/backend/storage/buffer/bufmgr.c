@@ -54,9 +54,11 @@
 
 
 #define USE_ART 1
+#define USE_ART_DROP 1
 
 // #define USE_HASH 1
-
+// #define USE_HASH_DROP 1
+// #define USE_HASH_DROP_VALIDATE 1
 
 /* Note: these two macros only work on shared buffers, not local ones! */
 #define BufHdrGetBlock(bufHdr)	((Block) (BufferBlocks + ((Size) (bufHdr)->buf_id) * BLCKSZ))
@@ -3001,6 +3003,107 @@ BufferGetLSNAtomic(Buffer buffer)
 	return lsn;
 }
 
+/*
+ * callback that is somewhat analagous to InvalidateBuffer of hashtable.
+ * it definitely does not require any locks inside, as whole tree will be destroyed
+ * at the end. Buf with bufHdr? probably should mimic original function...
+ */
+static int
+InvalidateBuffer_callback(void *data, const uint8 *k, uint32_t k_len, void *val)
+{
+	int buf_id = ((uint64_t) val & ~0xF0000000);
+	RelFileNode *rnode = (RelFileNode *) data;
+	BufferDesc *bufHdr = GetBufferDescriptor(buf_id);
+	uint32		buf_state;
+	BufferTag	oldTag;
+	uint32		oldFlags;
+
+	buf_state = LockBufHdr(bufHdr);
+	Assert(buf_state & BM_LOCKED);
+	if (RelFileNodeEquals(bufHdr->tag.rnode, (*rnode)))
+	{
+		BufferDesc *buf = bufHdr;
+		/* Save the original buffer tag before dropping the spinlock */
+		oldTag = buf->tag;
+		UnlockBufHdr(buf, buf_state);
+
+retry:
+
+		/* Re-lock the buffer header */
+		buf_state = LockBufHdr(buf);
+
+		/* If it's changed while we were waiting for lock, do nothing */
+		if (!BUFFERTAGS_EQUAL(buf->tag, oldTag))
+		{
+			UnlockBufHdr(buf, buf_state);
+			return 0;
+		}
+
+		/*
+		 * We assume the only reason for it to be pinned is that someone else is
+		 * flushing the page out.  Wait for them to finish.  (This could be an
+		 * infinite loop if the refcount is messed up... it would be nice to time
+		 * out after awhile, but there seems no way to be sure how many loops may
+		 * be needed.  Note that if the other guy has pinned the buffer but not
+		 * yet done StartBufferIO, WaitIO will fall through and we'll effectively
+		 * be busy-looping here.)
+		 */
+		if (BUF_STATE_GET_REFCOUNT(buf_state) != 0)
+		{
+			UnlockBufHdr(buf, buf_state);
+			/* safety check: should definitely not be our *own* pin */
+			if (GetPrivateRefCount(BufferDescriptorGetBuffer(buf)) > 0)
+				elog(ERROR, "buffer is pinned in InvalidateBuffer_callback");
+			WaitIO(buf);
+			goto retry;
+		}
+
+		/*
+		 * Clear out the buffer's tag and flags.  We must do this to ensure that
+		 * linear scans of the buffer array don't think the buffer is valid.
+		 */
+		oldFlags = buf_state & BUF_FLAG_MASK;
+		CLEAR_BUFFERTAG(buf->tag);
+		buf_state &= ~(BUF_FLAG_MASK | BUF_USAGECOUNT_MASK);
+		UnlockBufHdr(buf, buf_state);
+
+		/*
+		 * Insert the buffer at the head of the list of free buffers.
+		 */
+		StrategyFreeBuffer(buf);
+	}
+	else
+		UnlockBufHdr(bufHdr, buf_state);
+
+    return 0;
+}
+
+typedef struct {
+	RelFileNode *rnode;
+	bool found_forks[MAX_FORKNUM + 1];
+} DropRelFileData;
+
+static int
+DropRelFileNode_callback(void *data, const uint8 *k, uint32_t k_len, void *val)
+{
+	DropRelFileData *drfd = (DropRelFileData *) data;
+	RelFileNode *rnode = drfd->rnode;
+	BufferTag *tag = (BufferTag *) k;
+	SHMTREE *subtree;
+	Assert(RelFileNodeEquals(*rnode, tag->rnode));
+
+	subtree = (SHMTREE *) val;
+	Assert(subtree == BufLookupSubtreeNoCache(tag));
+    BufTableTryLockTree(subtree, LW_EXCLUSIVE);
+	shmtree_iter(subtree, InvalidateBuffer_callback, rnode);
+	shmtree_destroy(subtree);
+    BufTableTryUnLockTree(subtree);
+	
+	drfd->found_forks[tag->forkNum] = true;
+
+    return 0;
+}
+
 /* ---------------------------------------------------------------------
  *		DropRelFileNodeBuffers
  *
@@ -3119,6 +3222,8 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 		return;
 	}
 
+	int counter = 0;
+#ifdef USE_HASH_DROP
 	/*
 	 * For low number of relations to drop just use a simple walk through, to
 	 * save the bsearch overhead. The threshold to use is rather a guess than
@@ -3151,6 +3256,7 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 				if (RelFileNodeEquals(bufHdr->tag.rnode, nodes[j]))
 				{
 					rnode = &nodes[j];
+					counter++;
 					break;
 				}
 			}
@@ -3166,12 +3272,46 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 		if (rnode == NULL)
 			continue;
 
+#ifndef USE_HASH_DROP_VALIDATE
 		buf_state = LockBufHdr(bufHdr);
 		if (RelFileNodeEquals(bufHdr->tag.rnode, (*rnode)))
 			InvalidateBuffer(bufHdr);	/* releases spinlock */
 		else
 			UnlockBufHdr(bufHdr, buf_state);
+#endif
 	}
+#endif
+#ifdef USE_ART_DROP
+	DropRelFileData data;
+	BufferTag tag;
+	MemSet((char *) &data, 0, sizeof(DropRelFileData));
+	int j;
+	for (i = 0; i < n; i++)
+	{
+		data.rnode = &nodes[i];
+		INIT_BUFFERTAG(tag, *data.rnode, 0, 0);
+
+		/* iterate over all possible forks of current relfilenode */
+		BufTableLockMainTree(LW_SHARED);
+		shmtree_iter_prefix(BufTableGetMainTree(), (const uint8 *) data.rnode,
+				sizeof(RelFileNode), DropRelFileNode_callback, &data);
+		BufTableUnLockMainTree();
+
+		// assumes function comments (no newly inserted pages), otherwise
+		// exclusive lock on whole maintree is required for whole operation?
+		BufTableLockMainTree(LW_EXCLUSIVE);
+		for (j = 0; j <= MAX_FORKNUM; j++)
+		{
+			if (data.found_forks[j])
+			{
+				tag.forkNum = j;
+				BufUnistallSubtree(&tag);
+				data.found_forks[j] = false;
+			}
+		}
+		BufTableUnLockMainTree();
+	}
+#endif
 
 	pfree(nodes);
 }

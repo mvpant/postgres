@@ -47,9 +47,12 @@ extern long * shmtree_nodes_used(SHMTREE *shmt, SHMTREEBLK *blktrees);
 
 extern Size shmtree_get_blktree_size(void);
 extern void shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree);
-extern SHMTREE * alloc_blktree(SHMTREEBLK *tblk);
-extern void dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt);
+extern SHMTREE * shmtree_alloc_blktree(SHMTREEBLK *tblk);
+extern void shmtree_dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt);
 extern LWLock * shmtree_getlock(SHMTREE *shmt);
 
+typedef int(*art_callback)(void *data, const unsigned char *key, uint32_t key_len, void *value);
+extern int shmtree_iter(SHMTREE *shmt, art_callback cb, void *data);
+extern int shmtree_iter_prefix(SHMTREE *shmt, const unsigned char *prefix, int prefix_len, art_callback cb, void *data);
 
 #endif

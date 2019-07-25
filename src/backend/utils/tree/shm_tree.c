@@ -176,6 +176,12 @@ static void *art_delete(SHMTREE *shmt, const uint8 *key, int key_len);
 static void *art_search(const art_tree *t, const uint8 *key, int key_len);
 static bool element_alloc(SHMTREE *shmt, int nelem, int ntype);
 
+/* iterator stuff */
+static int art_iter(art_tree *t, art_callback cb, void *data);
+static int art_iter_prefix(art_tree *t, const uint8 *key, int key_len, art_callback cb, void *data);
+static int leaf_prefix_matches(const art_leaf *n, const uint8 *prefix, int prefix_len);
+static int recursive_iter(art_node *n, art_callback cb, void *data);
+
 /*
  * memory allocation support
  */
@@ -472,7 +478,7 @@ shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree)
 }
 
 SHMTREE *
-alloc_blktree(SHMTREEBLK *tblk)
+shmtree_alloc_blktree(SHMTREEBLK *tblk)
 {
 	NODEELEMENT *tmpElement;
 
@@ -491,14 +497,18 @@ alloc_blktree(SHMTREEBLK *tblk)
 	node_shmt =
 		(uintptr_t *) (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
 	shmt = (SHMTREE *) (*node_shmt);
-    // save spot in shared memory, that can be used for deallocation
-    shmt->shm_addr = (uintptr_t) node_shmt;
+	if (shmt->shm_addr != (uintptr_t) node_shmt)
+	{
+		// save spot in shared memory, that can be used for deallocation
+		shmt->shm_addr = (uintptr_t) node_shmt;
+	}
 	Assert(shmt->shm_addr != 0);
+	// elog(WARNING, "shmtree_alloc_blktree: %zu", (uintptr_t) shmt);
 	return shmt;
 }
 
 void
-dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
+shmtree_dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
 {
 	NODEELEMENT *tmpElement;
 	char *ptr;
@@ -509,6 +519,7 @@ dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
     ptr = (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
     node_shmt = (uintptr_t *) ptr;
     Assert(*node_shmt == (uintptr_t) shmt);
+	Assert(shmt->tree->root == NULL);
 
 	SpinLockAcquire(&tblk->mutex);
 
@@ -519,6 +530,7 @@ dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
 	Assert(tblk->nentries <= NODESUBTREE_NELEM);
 
 	SpinLockRelease(&tblk->mutex);
+	// elog(WARNING, "shmtree_dealloc_blktree: %zu", (uintptr_t) shmt);
 }
 
 Size
@@ -555,24 +567,37 @@ int shmtree_destroy(SHMTREE *shmt)
 }
 
 void *
-shmtree_insert(SHMTREE *shmt, const unsigned char *key, void *value)
+shmtree_insert(SHMTREE *shmt, const uint8 *key, void *value)
 {
     return art_insert(shmt, key, shmt->keysize, value);
 }
 
 void *
-shmtree_delete(SHMTREE *shmt, const unsigned char *key)
+shmtree_delete(SHMTREE *shmt, const uint8 *key)
 {
     return art_delete(shmt, key, shmt->keysize);
 }
 
 void *
-shmtree_search(SHMTREE *shmt, const unsigned char *key)
+shmtree_search(SHMTREE *shmt, const uint8 *key)
 {
     return art_search(shmt->tree, key, shmt->keysize);
 }
 
-uint64 shmtree_num_entries(SHMTREE *shmt)
+int
+shmtree_iter(SHMTREE *shmt, art_callback cb, void *data)
+{
+	return art_iter(shmt->tree, cb, data);
+}
+
+int
+shmtree_iter_prefix(SHMTREE *shmt, const uint8 *prefix, int prefix_len, art_callback cb, void *data)
+{
+	return art_iter_prefix(shmt->tree, prefix, prefix_len, cb, data);
+}
+
+uint64
+shmtree_num_entries(SHMTREE *shmt)
 {
     art_tree *t = shmt->tree;
     return t->size;
@@ -655,7 +680,7 @@ alloc_node(SHMTREE *shmt, uint8_t type)
         freelist_idx = 3;
         break;
     default:
-        elog(ERROR, "dealloc_node: unknown art_node type");
+		elog(ERROR, "alloc_node: unknown art_node type");
         Assert(false);
     }
 
@@ -669,6 +694,7 @@ alloc_node(SHMTREE *shmt, uint8_t type)
 
     n = (art_node *) NODEELEMENT_DATA(tmpElement);
     n->type = type;
+	// elog(WARNING, "alloc_node: %zu type=%d", (uintptr_t) n, type);
     return n;
 }
 
@@ -679,6 +705,7 @@ dealloc_node(SHMTREE *shmt, art_node *node)
     NODEELEMENT *tmpElement;
     Size elementSize;
     int freelist_idx;
+	int type = node->type;
 
     switch (node->type) {
     case NODE4:
@@ -713,6 +740,7 @@ dealloc_node(SHMTREE *shmt, art_node *node)
     shmth->freeList[freelist_idx].nentries++;
 
     SpinLockRelease(&shmth->freeList[freelist_idx].mutex);
+	// elog(WARNING, "dealloc_node: %zu type=%d", (uintptr_t) node, type);
 }
 
 static art_leaf *
@@ -769,6 +797,7 @@ destroy_node(SHMTREE *shmt, art_node *n)
     if (IS_LEAF(n)) {
         // pfree(LEAF_RAW(n));
         dealloc_leaf(shmt, LEAF_RAW(n));
+        shmt->tree->size--;
         return;
     }
 
@@ -821,6 +850,8 @@ static int
 art_tree_destroy(SHMTREE *shmt, art_tree *t)
 {
     destroy_node(shmt, t->root);
+	// cleat pointer to deallocated node, that is somewhere in freelist now
+	t->root = NULL;
     return 0;
 }
 
@@ -890,8 +921,9 @@ find_child(art_node *n, uint8 c)
             return &p.p4->children[c];
         break;
 
-    default:
+	default: {
         elog(ERROR, "find_child: unknown art_node type");
+		}
     }
     return NULL;
 }
@@ -1517,4 +1549,154 @@ art_delete(SHMTREE *shmt, const uint8 *key, int key_len)
         return old;
     }
     return NULL;
+}
+
+// Recursively iterates over the tree
+static int
+recursive_iter(art_node *n, art_callback cb, void *data)
+{
+	int i, idx, res;
+	// Handle base cases
+	if (!n) return 0;
+	if (IS_LEAF(n)) {
+		art_leaf *l = LEAF_RAW(n);
+		return cb(data, (const uint8 *) l->key, l->key_len, l->value);
+	}
+
+	switch (n->type) {
+	case NODE4:
+		for (i = 0; i < n->num_children; i++) {
+			res = recursive_iter(((art_node4 *) n)->children[i], cb, data);
+			if (res) return res;
+		}
+		break;
+	case NODE16:
+		for (i = 0; i < n->num_children; i++) {
+			res = recursive_iter(((art_node16 *) n)->children[i], cb, data);
+			if (res) return res;
+		}
+		break;
+	case NODE48:
+		for (i = 0; i < 256; i++) {
+			idx = ((art_node48 *) n)->keys[i];
+			if (!idx) continue;
+			res = recursive_iter(((art_node48 *) n)->children[idx - 1], cb, data);
+			if (res) return res;
+		}
+		break;
+	case NODE256:
+		for (i = 0; i < 256; i++) {
+			if (!((art_node256 *) n)->children[i])
+				continue;
+			res = recursive_iter(((art_node256 *) n)->children[i], cb, data);
+			if (res) return res;
+		}
+		break;
+	default:
+		elog(ERROR, "recursive_iter: unknown art_node type");
+	}
+	return 0;
+}
+
+/**
+ * Iterates through the entries pairs in the map,
+ * invoking a callback for each. The call back gets a
+ * key, value for each and returns an integer stop value.
+ * If the callback returns non-zero, then the iteration stops.
+ * @arg t The tree to iterate over
+ * @arg cb The callback function to invoke
+ * @arg data Opaque handle passed to the callback
+ * @return 0 on success, or the return of the callback.
+ */
+static int
+art_iter(art_tree *t, art_callback cb, void *data)
+{
+	return recursive_iter(t->root, cb, data);
+}
+
+/**
+ * Checks if a leaf prefix matches
+ * @return 0 on success.
+ */
+static int
+leaf_prefix_matches(const art_leaf *n, const uint8 *prefix, int prefix_len)
+{
+	// Fail if the key length is too short
+	if (n->key_len < (uint32_t) prefix_len)
+		return 1;
+
+	// Compare the keys
+	return memcmp(n->key, prefix, prefix_len);
+}
+
+/**
+ * Iterates through the entries pairs in the map,
+ * invoking a callback for each that matches a given prefix.
+ * The call back gets a key, value for each and returns an integer stop value.
+ * If the callback returns non-zero, then the iteration stops.
+ * @arg t The tree to iterate over
+ * @arg prefix The prefix of keys to read
+ * @arg prefix_len The length of the prefix
+ * @arg cb The callback function to invoke
+ * @arg data Opaque handle passed to the callback
+ * @return 0 on success, or the return of the callback.
+ */
+static int
+art_iter_prefix(art_tree *t, const uint8 *key, int key_len, art_callback cb, void *data)
+{
+	art_node **child;
+	art_node *n = t->root;
+	int prefix_len, depth = 0;
+	while (n)
+	{
+		// Might be a leaf
+		if (IS_LEAF(n))
+		{
+			n = (art_node *) LEAF_RAW(n);
+			// Check if the expanded path matches
+			if (!leaf_prefix_matches((art_leaf *) n, key, key_len)) {
+				art_leaf *l = (art_leaf *) n;
+				return cb(data, (const uint8 *) l->key, l->key_len, l->value);
+			}
+			return 0;
+		}
+
+		// If the depth matches the prefix, we need to handle this node
+		if (depth == key_len)
+		{
+			art_leaf *l = minimum(n);
+			if (!leaf_prefix_matches(l, key, key_len))
+				return recursive_iter(n, cb, data);
+			return 0;
+		}
+
+		// Bail if the prefix does not match
+		if (n->partial_len)
+		{
+			prefix_len = prefix_mismatch(n, key, key_len, depth);
+
+			// Guard if the mis-match is longer than the MAX_PREFIX_LEN
+			if ((uint32_t) prefix_len > n->partial_len) {
+				prefix_len = n->partial_len;
+			}
+
+			// If there is no match, search is terminated
+			if (!prefix_len) {
+				return 0;
+
+			// If we've matched the prefix, iterate on this node
+			} else if (depth + prefix_len == key_len) {
+				return recursive_iter(n, cb, data);
+			}
+
+			// if there is a full match, go deeper
+			depth = depth + n->partial_len;
+		}
+
+		// Recursively search
+		child = find_child(n, key[depth]);
+		n = (child) ? *child : NULL;
+		depth++;
+	}
+	return 0;
 }
