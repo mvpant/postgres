@@ -38,7 +38,6 @@ extern void* shmtree_insert(SHMTREE *shmt, const unsigned char *key, void *value
 extern void* shmtree_delete(SHMTREE *shmt, const unsigned char *key);
 extern void* shmtree_search(SHMTREE *shmt, const unsigned char *key);
 
-extern uint64 shmtree_num_entries(SHMTREE *shmt);
 extern void shmtree_memory_usage(SHMTREE *shmt);
 extern void shmtree_nodes_proportion(SHMTREE *shmt);
 extern Size shmtree_estimate_size(Size keysize);

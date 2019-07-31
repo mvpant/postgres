@@ -1330,7 +1330,6 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			LWLockRelease(newPartitionLock);
 #endif
 #ifdef USE_ART
-			// LWLockRelease(SHMTreeLock);
             BufTableTryUnLockTree(newSubtree);
 #endif
 
@@ -1508,7 +1507,6 @@ retry:
 	LWLockAcquire(oldPartitionLock, LW_EXCLUSIVE);
 #endif
 #ifdef USE_ART
-	// LWLockAcquire(SHMTreeLock, LW_EXCLUSIVE);
 	BufTableTryLockTree(oldSubtree, LW_EXCLUSIVE);
 #endif
 
@@ -1523,7 +1521,6 @@ retry:
 		LWLockRelease(oldPartitionLock);
 #endif
 #ifdef USE_ART
-		// LWLockRelease(SHMTreeLock);
 		BufTableTryUnLockTree(oldSubtree);
 #endif
 		return;
@@ -1545,7 +1542,6 @@ retry:
 		LWLockRelease(oldPartitionLock);
 #endif
 #ifdef USE_ART
-		// LWLockRelease(SHMTreeLock);
 		BufTableTryUnLockTree(oldSubtree);
 #endif
 		/* safety check: should definitely not be our *own* pin */
@@ -1577,7 +1573,6 @@ retry:
 	LWLockRelease(oldPartitionLock);
 #endif
 #ifdef USE_ART
-	// LWLockRelease(SHMTreeLock);
 	BufTableTryUnLockTree(oldSubtree);
 #endif
 

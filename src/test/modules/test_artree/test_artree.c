@@ -220,8 +220,8 @@ Datum
 pg_stat_get_shmtree(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
-	Datum		values[6];
-	bool		nulls[6];
+	Datum		values[12];
+	bool		nulls[12];
 	long *vals;
 
 	/* Initialise values and NULL flags arrays */
@@ -229,7 +229,7 @@ pg_stat_get_shmtree(PG_FUNCTION_ARGS)
 	MemSet(nulls, 0, sizeof(nulls));
 
 	/* Initialise attributes information in the tuple descriptor */
-	tupdesc = CreateTemplateTupleDesc(6, false);
+	tupdesc = CreateTemplateTupleDesc(12, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "leafs",
 					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "node4",
@@ -241,6 +241,18 @@ pg_stat_get_shmtree(PG_FUNCTION_ARGS)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "node256",
 					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 6, "subtrees",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 7, "leafs-total",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 8, "node4-total",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 9, "node16-total",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 10, "node48-total",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 11, "node256-total",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 12, "subtress-total",
 					   INT4OID, -1, 0);
 
 	BlessTupleDesc(tupdesc);
@@ -254,6 +266,12 @@ pg_stat_get_shmtree(PG_FUNCTION_ARGS)
 	values[3] = Int32GetDatum(vals[3]);
 	values[4] = Int32GetDatum(vals[4]);
 	values[5] = Int32GetDatum(vals[5]);
+	values[6] = Int32GetDatum(vals[6]);
+	values[7] = Int32GetDatum(vals[7]);
+	values[8] = Int32GetDatum(vals[8]);
+	values[9] = Int32GetDatum(vals[9]);
+	values[10] = Int32GetDatum(vals[10]);
+	values[11] = Int32GetDatum(vals[11]);
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(
