@@ -29,7 +29,6 @@ static long stats[12];
 #define NODE48 3
 #define NODE256 4
 #define NODELEAF 5
-#define INNER_NODETYPE_IS_VALID(type) (type >= NODE4 && type <= NODE256)
 #define NODE_FREELIST_IDX(type) (type - 1)
 #define LEAF_FREELIST_IDX(type) NODE_FREELIST_IDX(type)
 
@@ -257,7 +256,6 @@ shmtree_create(const char *treename, SHMTREECTL *info, int flags)
 {
     SHMTREE *shmt;
     SHMTREEHDR *shmth;
-
     art_tree *art;
 
 	if (flags & SHMTREE_SHARED_MEM)
@@ -533,22 +531,18 @@ SHMTREE *
 shmtree_alloc_blktree(SHMTREEBLK *tblk)
 {
 	NODEELEMENT *tmpElement;
-
 	SHMTREE *shmt;
 	uintptr_t *node_shmt;
-	SpinLockAcquire(&tblk->mutex);
 
+	SpinLockAcquire(&tblk->mutex);
 	tmpElement = tblk->freeList;
 	tblk->freeList = tmpElement->link;
 	tblk->nentries--;
-
 	Assert(tblk->nentries >= 0);
-
 	SpinLockRelease(&tblk->mutex);
 
 	tmpElement->link = NULL;
-	node_shmt =
-		(uintptr_t *) (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
+	node_shmt = (uintptr_t *) NODEELEMENT_DATA(tmpElement);
 	shmt = (SHMTREE *) (*node_shmt);
 	Assert(shmt->shm_addr == (uintptr_t) node_shmt);
 	// elog(WARNING, "shmtree_alloc_blktree: %p %s", shmt, shmt->treename);
@@ -566,20 +560,17 @@ shmtree_dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
 
     // maybe fix this weird alloc scheme later?
 	tmpElement = NODEELEMENT_LINK(shmt->shm_addr);
-    ptr = (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
+	ptr = NODEELEMENT_DATA(tmpElement);
     node_shmt = (uintptr_t *) ptr;
 	Assert(node_shmt);
     Assert(*node_shmt == (uintptr_t) shmt);
 	Assert(shmt->tree->root == NULL);
 
 	SpinLockAcquire(&tblk->mutex);
-
 	tmpElement->link = tblk->freeList;
 	tblk->freeList = tmpElement;
 	tblk->nentries++;
-
 	Assert(tblk->nentries <= NODESUBTREE_NELEM);
-
 	SpinLockRelease(&tblk->mutex);
 }
 
@@ -697,8 +688,22 @@ alloc_node(SHMTREE *shmt, uint8 type)
     int freelist_idx;
     art_node *n;
 
-	if (!INNER_NODETYPE_IS_VALID(type))
+	switch (type) {
+	case NODE4:
+		shmt->tree->size4++;
+		break;
+	case NODE16:
+		shmt->tree->size16++;
+		break;
+	case NODE48:
+		shmt->tree->size48++;
+		break;
+	case NODE256:
+		shmt->tree->size256++;
+		break;
+	default:
 		elog(ERROR, "alloc_node: unknown art_node type");
+	}
 
 	freelist_idx = NODE_FREELIST_IDX(type);
 
@@ -730,24 +735,26 @@ dealloc_node(SHMTREE *shmt, art_node *node)
 	switch (type) {
     case NODE4:
         elementSize = MAXALIGN(sizeof(art_node4));
+		shmt->tree->size4--;
         break;
     case NODE16:
         elementSize = MAXALIGN(sizeof(art_node16));
+		shmt->tree->size16--;
         break;
     case NODE48:
         elementSize = MAXALIGN(sizeof(art_node48));
+		shmt->tree->size48--;
         break;
     case NODE256:
         elementSize = MAXALIGN(sizeof(art_node256));
+		shmt->tree->size256--;
         break;
     default:
         elog(ERROR, "dealloc_node: unknown art_node type");
     }
 
 	freelist_idx = NODE_FREELIST_IDX(type);
-
     tmpElement = NODEELEMENT_LINK(node);
-
 	MemSet(node, 0, elementSize);
 
     SpinLockAcquire(&shmth->freeList[freelist_idx].mutex);
@@ -777,6 +784,7 @@ alloc_leaf(SHMTREE *shmt)
     SpinLockRelease(&shmth->freeList[freelist_idx].mutex);
 
 	tmpElement->link = NULL;
+	shmt->tree->leaves++;
 
     n = (art_leaf *) NODEELEMENT_DATA(tmpElement);
     return n;
@@ -791,6 +799,8 @@ dealloc_leaf(SHMTREE *shmt, art_leaf *node)
 	uint8 freelist_idx = LEAF_FREELIST_IDX(NODELEAF);
     tmpElement = NODEELEMENT_LINK(node);
 
+	Assert(tmpElement->link == NULL);
+
     MemSet(node, 0, elementSize);
 
     SpinLockAcquire(&shmth->freeList[freelist_idx].mutex);
@@ -800,6 +810,8 @@ dealloc_leaf(SHMTREE *shmt, art_leaf *node)
     shmth->freeList[freelist_idx].nentries++;
 
     SpinLockRelease(&shmth->freeList[freelist_idx].mutex);
+
+	shmt->tree->leaves--;
 }
 
 /*
@@ -817,7 +829,6 @@ destroy_node(SHMTREE *shmt, art_node *n)
     if (IS_LEAF(n)) {
         // pfree(LEAF_RAW(n));
         dealloc_leaf(shmt, LEAF_RAW(n));
-		shmt->tree->leaves--;
         return;
     }
 
@@ -1370,9 +1381,6 @@ art_insert(SHMTREE *shmt, const uint8 *key, int key_len, void *value)
     art_tree *t = shmt->tree;
     void *old = recursive_insert(shmt, t->root, &t->root, key, key_len, value, 0,
                                  &old_val);
-    if (!old_val)
-		t->leaves++;
-
     return old;
 }
 
@@ -1563,7 +1571,6 @@ art_delete(SHMTREE *shmt, const uint8 *key, int key_len)
     art_leaf *l = recursive_delete(shmt, t->root, &t->root, key, key_len, 0);
     if (l) {
         void *old = l->value;
-		t->leaves--;
         // pfree(l);
         dealloc_leaf(shmt, l);
         return old;
