@@ -145,12 +145,12 @@ typedef struct FreeListNode
 	NODEELEMENT *freeList;
 } FreeListNode;
 
-typedef struct SHMTREEBLK
+typedef struct FreeListARTree
 {
 	slock_t		mutex;
 	long		nentries;
 	NODEELEMENT *freeList;
-} SHMTREEBLK;
+} FreeListARTree;
 
 /*
  * Header structure for a tree --- contains all changeable info
@@ -252,13 +252,13 @@ TreeAlloc(Size size)
 }
 
 SHMTREE *
-shmtree_create(const char *treename, SHMTREECTL *info, int flags)
+artree_create(const char *treename, ARTREECTL *info, int flags)
 {
     SHMTREE *shmt;
     SHMTREEHDR *shmth;
     art_tree *art;
 
-	if (flags & SHMTREE_SHARED_MEM)
+	if (flags & ARTREE_SHARED_MEM)
 	{
 		/* Set up to allocate the tree header */
 		CurrentTreeCxt = TopMemoryContext;
@@ -266,7 +266,7 @@ shmtree_create(const char *treename, SHMTREECTL *info, int flags)
 	else
 	{
 		/* Create the tree's private memory context */
-		if (flags & SHMTREE_CONTEXT)
+		if (flags & ARTREE_CONTEXT)
 			CurrentTreeCxt = info->hcxt;
 		else
 			CurrentTreeCxt = TopMemoryContext;
@@ -282,23 +282,23 @@ shmtree_create(const char *treename, SHMTREECTL *info, int flags)
 	strcpy(shmt->treename, treename);
 
 	/* If we have a private context, label it with tree's name */
-	if (!(flags & SHMTREE_SHARED_MEM))
+	if (!(flags & ARTREE_SHARED_MEM))
 		MemoryContextSetIdentifier(CurrentTreeCxt, shmt->treename);
 
 	/* And select the entry allocation function, too. */
-	if (flags & SHMTREE_ALLOC)
+	if (flags & ARTREE_ALLOC)
 		shmt->alloc = info->alloc;
 	else
 		shmt->alloc = TreeAlloc;
 
-	if (flags & SHMTREE_SHARED_MEM)
+	if (flags & ARTREE_SHARED_MEM)
 	{
 		shmt->tctl = info->tctl;
 		shmt->tree = (art_tree *) (((char *) info->tctl) + sizeof(SHMTREEHDR));
 		shmt->tcxt = NULL;
 		shmt->isshared = true;
 
-		if (flags & SHMTREE_ATTACH)
+		if (flags & ARTREE_ATTACH)
 		{
 			shmth = shmt->tctl;
 			shmt->keysize = shmth->keysize;
@@ -337,12 +337,12 @@ shmtree_create(const char *treename, SHMTREECTL *info, int flags)
 	LWLockInitialize(&art->lock, LWTRANCHE_BUFFER_MAPPING);
 
 	/*
-	 * hash table now allocates space for key and data but you have to say how
+	 * tree now allocates space for key and data but you have to say how
 	 * much space to allocate
 	 */
-	if (flags & SHMTREE_ELEM)
+	if (flags & ARTREE_ELEM)
 	{
-		Assert(info->entrysize >= info->keysize);
+		// Assert(info->entrysize >= info->keysize);
 		shmth->keysize = info->keysize;
 		shmth->entrysize = info->entrysize;
 	}
@@ -350,11 +350,7 @@ shmtree_create(const char *treename, SHMTREECTL *info, int flags)
 	/* make local copies of heavily-used constant fields */
 	shmt->keysize = shmth->keysize;
 
-	/* Build the hash directory structure */
-	// if (!init_htab(hashp, nelem))
-		// elog(ERROR, "failed to initialize hash table \"%s\"", hashp->tabname);
-
-	if (flags & SHMTREE_SHARED_MEM)
+	if (flags & ARTREE_SHARED_MEM)
 	{
         if (!element_alloc(shmt, NODE4_NELEM, NODE4))
             ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
@@ -437,16 +433,16 @@ element_alloc(SHMTREE *shmt, int nelem, int ntype)
 }
 
 Size
-shmtree_get_shared_size(SHMTREECTL *info, int flags)
+artree_get_shared_size(ARTREECTL *info, int flags)
 {
 	return sizeof(SHMTREEHDR) + sizeof(art_tree);
 }
 
 Size
-shmtree_get_blktree_size()
+artree_subtreelist_size()
 {
 	Size size, elementSize;
-	size = MAXALIGN(sizeof(SHMTREEBLK));
+	size = MAXALIGN(sizeof(FreeListARTree));
 	// we will reuse existing shmtreehdr of sharedbuftree...
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + sizeof(SHMTREE *) + sizeof(art_tree);
 	size = add_size(size, mul_size(elementSize, NODESUBTREE_NELEM));
@@ -454,13 +450,13 @@ shmtree_get_blktree_size()
 }
 
 LWLock *
-shmtree_getlock(SHMTREE *shmt)
+artree_getlock(SHMTREE *shmt)
 {
     return &shmt->tree->lock;
 }
 
 void
-shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree)
+artree_build_subtreelist(FreeListARTree *artlist, SHMTREE *buftree)
 {
 	// chain and init shmtrees using original copy(share freelists)
 	NODEELEMENT *firstElement;
@@ -471,7 +467,7 @@ shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree)
 	Size elementSize;
 
 	SHMTREE *shmt;
-	SHMTREEHDR *shmth = shrbuftree->tctl;
+	SHMTREEHDR *shmth = buftree->tctl;
 	uintptr_t *node_shmt;
 	char *treename = "blktree";
 	char *ptr;
@@ -483,7 +479,7 @@ shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree)
 		MAXALIGN(sizeof(NODEELEMENT)) + sizeof(SHMTREE *) + sizeof(art_tree);
 
 	firstElement =
-		(NODEELEMENT *) (((char *) tblk) + MAXALIGN(sizeof(SHMTREEBLK)));
+		(NODEELEMENT *) (((char *) artlist) + MAXALIGN(sizeof(FreeListARTree)));
 
 	prevElement = NULL;
 	tmpElement = firstElement;
@@ -522,24 +518,24 @@ shmtree_build_blktree(SHMTREEBLK *tblk, SHMTREE *shrbuftree)
 		tmpElement = (NODEELEMENT *) (((char *) tmpElement) + elementSize);
 	}
 
-	SpinLockInit(&tblk->mutex);
-	tblk->freeList = prevElement;
-	tblk->nentries = NODESUBTREE_NELEM;
+	SpinLockInit(&artlist->mutex);
+	artlist->freeList = prevElement;
+	artlist->nentries = NODESUBTREE_NELEM;
 }
 
 SHMTREE *
-shmtree_alloc_blktree(SHMTREEBLK *tblk)
+artree_alloc_subtree(FreeListARTree *artlist)
 {
 	NODEELEMENT *tmpElement;
 	SHMTREE *shmt;
 	uintptr_t *node_shmt;
 
-	SpinLockAcquire(&tblk->mutex);
-	tmpElement = tblk->freeList;
-	tblk->freeList = tmpElement->link;
-	tblk->nentries--;
-	Assert(tblk->nentries >= 0);
-	SpinLockRelease(&tblk->mutex);
+	SpinLockAcquire(&artlist->mutex);
+	tmpElement = artlist->freeList;
+	artlist->freeList = tmpElement->link;
+	artlist->nentries--;
+	Assert(artlist->nentries >= 0);
+	SpinLockRelease(&artlist->mutex);
 
 	tmpElement->link = NULL;
 	node_shmt = (uintptr_t *) NODEELEMENT_DATA(tmpElement);
@@ -550,7 +546,7 @@ shmtree_alloc_blktree(SHMTREEBLK *tblk)
 }
 
 void
-shmtree_dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
+artree_dealloc_subtree(FreeListARTree *artlist, SHMTREE *shmt)
 {
 	NODEELEMENT *tmpElement;
 	char *ptr;
@@ -566,16 +562,16 @@ shmtree_dealloc_blktree(SHMTREEBLK *tblk, SHMTREE *shmt)
     Assert(*node_shmt == (uintptr_t) shmt);
 	Assert(shmt->tree->root == NULL);
 
-	SpinLockAcquire(&tblk->mutex);
-	tmpElement->link = tblk->freeList;
-	tblk->freeList = tmpElement;
-	tblk->nentries++;
-	Assert(tblk->nentries <= NODESUBTREE_NELEM);
-	SpinLockRelease(&tblk->mutex);
+	SpinLockAcquire(&artlist->mutex);
+	tmpElement->link = artlist->freeList;
+	artlist->freeList = tmpElement;
+	artlist->nentries++;
+	Assert(artlist->nentries <= NODESUBTREE_NELEM);
+	SpinLockRelease(&artlist->mutex);
 }
 
 Size
-shmtree_estimate_size(Size keysize)
+artree_estimate_size(Size keysize)
 {
 	Size		size;
 	long elementSize;
@@ -597,42 +593,43 @@ shmtree_estimate_size(Size keysize)
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_leaf)) + keysize;
 	size = add_size(size, mul_size(NODELEAF_NELEM, elementSize));
 
-	size = add_size(size, shmtree_get_blktree_size());
+	size = add_size(size, artree_subtreelist_size());
 
 	return size;
 }
 
-int shmtree_destroy(SHMTREE *shmt)
+int
+artree_destroy(SHMTREE *shmt)
 {
     return art_tree_destroy(shmt, shmt->tree);
 }
 
 void *
-shmtree_insert(SHMTREE *shmt, const uint8 *key, void *value)
+artree_insert(SHMTREE *shmt, const uint8 *key, void *value)
 {
     return art_insert(shmt, key, shmt->keysize, value);
 }
 
 void *
-shmtree_delete(SHMTREE *shmt, const uint8 *key)
+artree_delete(SHMTREE *shmt, const uint8 *key)
 {
     return art_delete(shmt, key, shmt->keysize);
 }
 
 void *
-shmtree_search(SHMTREE *shmt, const uint8 *key)
+artree_search(SHMTREE *shmt, const uint8 *key)
 {
     return art_search(shmt->tree, key, shmt->keysize);
 }
 
 int
-shmtree_iter(SHMTREE *shmt, art_callback cb, void *data)
+artree_iter(SHMTREE *shmt, art_callback cb, void *data)
 {
 	return art_iter(shmt->tree, cb, data);
 }
 
 int
-shmtree_iter_prefix(SHMTREE *shmt,
+artree_iter_prefix(SHMTREE *shmt,
 					const uint8 *prefix,
 					int prefix_len,
 					art_callback cb,
@@ -642,12 +639,14 @@ shmtree_iter_prefix(SHMTREE *shmt,
 	return art_iter_prefix(shmt->tree, prefix, prefix_len, cb, data);
 }
 
-void shmtree_memory_usage(SHMTREE *shmt)
+void
+artree_memory_usage(SHMTREE *shmt)
 {
 
 }
 
-void shmtree_nodes_proportion(SHMTREE *shmt)
+void
+artree_nodes_proportion(SHMTREE *shmt)
 {
     art_tree *t = shmt->tree;
 	fprintf(stderr,
@@ -656,7 +655,7 @@ void shmtree_nodes_proportion(SHMTREE *shmt)
 }
 
 long *
-shmtree_nodes_used(SHMTREE *shmt, SHMTREEBLK *blktrees)
+artree_nodes_used(SHMTREE *shmt, FreeListARTree *artlist)
 {
 	SHMTREEHDR *shmth = shmt->tctl;
 	/* do not bother with lock acquiring */
@@ -665,7 +664,7 @@ shmtree_nodes_used(SHMTREE *shmt, SHMTREEBLK *blktrees)
 	stats[2] = NODE16_NELEM - shmth->freeList[1].nentries;
 	stats[3] = NODE48_NELEM - shmth->freeList[2].nentries;
 	stats[4] = NODE256_NELEM - shmth->freeList[3].nentries;
-	stats[5] = NODESUBTREE_NELEM - blktrees->nentries;
+	stats[5] = NODESUBTREE_NELEM - artlist->nentries;
 	stats[6] = NODELEAF_NELEM;
 	stats[7] = NODE4_NELEM;
 	stats[8] = NODE16_NELEM;

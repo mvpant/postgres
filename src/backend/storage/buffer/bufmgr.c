@@ -3090,8 +3090,8 @@ DropRelFileNode_callback(void *data, const uint8 *k, uint32_t k_len, void *val)
 	subtree = (SHMTREE *) val;
 	Assert(subtree == BufLookupSubtreeNoCache(tag));
 	BufTryLockTree(subtree, LW_EXCLUSIVE);
-	shmtree_iter(subtree, InvalidateBuffer_callback, rnode);
-	shmtree_destroy(subtree);
+	artree_iter(subtree, InvalidateBuffer_callback, rnode);
+	artree_destroy(subtree);
 	BufTryUnLockTree(subtree);
 	
 	drfd->found_forks[tag->forkNum] = true;
@@ -3288,7 +3288,7 @@ DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes)
 
 		/* iterate over all possible forks of current relfilenode */
 		BufLockMainTree(LW_SHARED);
-		shmtree_iter_prefix(BufGetMainTree(), (const uint8 *) data.rnode,
+		artree_iter_prefix(BufGetMainTree(), (const uint8 *) data.rnode,
 				sizeof(RelFileNode), DropRelFileNode_callback, &data);
 		BufUnLockMainTree();
 

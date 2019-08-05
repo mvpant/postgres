@@ -36,7 +36,7 @@ static HTAB *SharedBufHash;
 
 static SHMTREE *SharedBufTree;
 
-static SHMTREEBLK *SharedBlockSubtrees;
+static FreeListARTree *SharedBlockSubtrees;
 
 #define PAYLOAD_MOD 0xF0000000
 
@@ -54,22 +54,22 @@ BufGetMainTree()
 
 void BufLockMainTree(LWLockMode mode)
 {
-	LWLockAcquire(shmtree_getlock(SharedBufTree), mode);
+	LWLockAcquire(artree_getlock(SharedBufTree), mode);
 }
 
 void BufUnLockMainTree()
 {
-	LWLockRelease(shmtree_getlock(SharedBufTree));
+	LWLockRelease(artree_getlock(SharedBufTree));
 }
 
 void BufTryLockTree(SHMTREE *tree, LWLockMode mode)
 {
-	if (tree) LWLockAcquire(shmtree_getlock(tree), mode);
+	if (tree) LWLockAcquire(artree_getlock(tree), mode);
 }
 
 void BufTryUnLockTree(SHMTREE *tree)
 {
-	if (tree) LWLockRelease(shmtree_getlock(tree));
+	if (tree) LWLockRelease(artree_getlock(tree));
 }
 
 /*
@@ -80,9 +80,19 @@ Size
 BufTableShmemSize(int size)
 {
     Size hashsize = hash_estimate_size(size, sizeof(BufferLookupEnt));
-    Size shmtree = shmtree_estimate_size(sizeof(BufferTag));
 
-	return hashsize + shmtree;
+	return hashsize;
+}
+
+/*
+ * Estimate space needed for mapping tree
+ */
+Size
+BufTreeShmemSize()
+{
+	Size tree = artree_estimate_size(sizeof(BufferTag) - sizeof(BlockNumber));
+
+	return tree;
 }
 
 /*
@@ -93,7 +103,7 @@ void
 InitBufTable(int size)
 {
 	HASHCTL		info;
-    SHMTREECTL  tinfo;
+	ARTREECTL  tinfo;
 	bool found;
 
 	/* assume no locking is needed yet */
@@ -109,15 +119,17 @@ InitBufTable(int size)
 								  HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
 
 	tinfo.keysize = sizeof(BufferTag) - sizeof(BlockNumber);
-	tinfo.entrysize = sizeof(BufferLookupEnt);
+	/* in case of buffer tree we can save id inside leaf pointer */
+	tinfo.entrysize = 0; //sizeof(BufferLookupEnt);
 	SharedBufTree = ShmemInitTree("Shared Buffer Lookup Tree",
 								  &tinfo,
-								  SHMTREE_ELEM);
+								  ARTREE_ELEM);
 
-	SharedBlockSubtrees = ShmemInitStruct("Shared Buffer BlkTrees",
-							   shmtree_get_blktree_size(),
-							   &found);
-	shmtree_build_blktree(SharedBlockSubtrees, SharedBufTree);
+	SharedBlockSubtrees = ShmemInitStruct("Shared Buffer Block Trees",
+										  artree_subtreelist_size(),
+										  &found);
+
+	artree_build_subtreelist(SharedBlockSubtrees, SharedBufTree);
 }
 
 /*
@@ -151,8 +163,8 @@ BufTableLookup(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 
 	if (subtree)
 	{
-		shmresult = (uintptr_t) shmtree_search(
-			subtree, (const uint8_t *) &tagPtr->blockNum);
+		shmresult = (uintptr_t) artree_search(
+			subtree, (const uint8 *) &tagPtr->blockNum);
 	}
 #endif
 #ifdef USE_HASH
@@ -229,8 +241,8 @@ BufTableInsert(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode, int buf_id)
 
 	Assert(subtree);
 
-	shmresult = (uintptr_t) shmtree_insert(
-		subtree, (const uint8_t *) &tagPtr->blockNum, (void *) payload);
+	shmresult = (uintptr_t) artree_insert(
+		subtree, (const uint8 *) &tagPtr->blockNum, (void *) payload);
 #endif
 #ifdef USE_HASH
 	result = (BufferLookupEnt *)
@@ -299,8 +311,8 @@ BufTableDelete(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 #ifdef USE_ART
 	Assert(subtree);
 
-	shmresult = (uintptr_t) shmtree_delete(
-		subtree, (const uint8_t *) &tagPtr->blockNum);
+	shmresult = (uintptr_t) artree_delete(
+		subtree, (const uint8 *) &tagPtr->blockNum);
 #endif
 #ifdef USE_HASH
 	result = (BufferLookupEnt *)
@@ -336,7 +348,7 @@ BufTableDelete(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 long *
 BufTreeStats(void)
 {
-	return shmtree_nodes_used(SharedBufTree, SharedBlockSubtrees);
+	return artree_nodes_used(SharedBufTree, SharedBlockSubtrees);
 }
 
 SHMTREE *
@@ -348,13 +360,13 @@ BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 	subtree = smgr->cached_forks[tagPtr->forkNum];
 	if (!subtree)
 	{
-		subtree = shmtree_alloc_blktree(SharedBlockSubtrees);
-		shmresult = (uintptr_t) shmtree_insert(
-			SharedBufTree, (const uint8_t *) tagPtr, (void *) subtree);
+		subtree = artree_alloc_subtree(SharedBlockSubtrees);
+		shmresult = (uintptr_t) artree_insert(
+			SharedBufTree, (const uint8 *) tagPtr, (void *) subtree);
 		// check no collision appeared, if it is => dealloc?
 		if (shmresult != 0)
 		{
-			shmtree_dealloc_blktree(SharedBlockSubtrees, subtree);
+			artree_dealloc_subtree(SharedBlockSubtrees, subtree);
 			subtree = (SHMTREE *) shmresult;
 			elog(WARNING, "install:subtree collision.");
 		}
@@ -368,12 +380,12 @@ BufUnistallSubtree(BufferTag *tagPtr)
 {
 	SHMTREE *subtree;
 
-	subtree = (SHMTREE *) shmtree_delete(
-		SharedBufTree, (const uint8_t *) tagPtr);
+	subtree = (SHMTREE *) artree_delete(
+		SharedBufTree, (const uint8 *) tagPtr);
 
 	if (subtree)
 	{
-		shmtree_dealloc_blktree(SharedBlockSubtrees, subtree);
+		artree_dealloc_subtree(SharedBlockSubtrees, subtree);
 	}
 	// todo: send message to backends to invalidate cache...
 	// or it is(probably) already done in CacheInvalidateSmgr(rnode);
@@ -390,8 +402,8 @@ BufLookupSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 	subtree = smgr->cached_forks[tagPtr->forkNum];
 	if (!subtree)
 	{
-		subtree = (SHMTREE *) shmtree_search(
-			SharedBufTree, (const uint8_t *) tagPtr);
+		subtree = (SHMTREE *) artree_search(
+			SharedBufTree, (const uint8 *) tagPtr);
 		smgr->cached_forks[tagPtr->forkNum] = subtree;
 	}
 
@@ -403,8 +415,8 @@ BufLookupSubtreeNoCache(BufferTag *tagPtr)
 {
 	SHMTREE *subtree;
 	
-	subtree = (SHMTREE *) shmtree_search(
-		SharedBufTree, (const uint8_t *) tagPtr);
+	subtree = (SHMTREE *) artree_search(
+		SharedBufTree, (const uint8 *) tagPtr);
 
 	return subtree;
 }

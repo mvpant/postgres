@@ -359,18 +359,18 @@ ShmemInitHash(const char *name,		/* table string name for shmem index */
  */
 SHMTREE *
 ShmemInitTree(const char *name,		/* tree string name for shmem index */
-			  SHMTREECTL *infoP,	/* info about key and bucket size */
+			  ARTREECTL *infoP,	/* info about key and entry size */
 			  int tree_flags)	/* info about infoP */
 {
 	bool		found;
 	void	   *location;
 
 	infoP->alloc = ShmemAllocNoError;
-	tree_flags |= SHMTREE_SHARED_MEM | SHMTREE_ALLOC;
+	tree_flags |= ARTREE_SHARED_MEM | ARTREE_ALLOC;
 
 	/* look it up in the shmem index */
 	location = ShmemInitStruct(name,
-							   shmtree_get_shared_size(infoP, tree_flags),
+							   artree_get_shared_size(infoP, tree_flags),
 							   &found);
 
 	/*
@@ -378,12 +378,12 @@ ShmemInitTree(const char *name,		/* tree string name for shmem index */
 	 * new space
 	 */
 	if (found)
-		tree_flags |= SHMTREE_ATTACH;
+		tree_flags |= ARTREE_ATTACH;
 
 	/* Pass location of hashtable header to hash_create */
 	infoP->tctl = (SHMTREEHDR *) location;
 
-	return shmtree_create(name, infoP, tree_flags);
+	return artree_create(name, infoP, tree_flags);
 }
 
 /*
