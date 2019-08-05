@@ -36,7 +36,7 @@ static HTAB *SharedBufHash;
 
 static SHMTREE *SharedBufTree;
 
-static SHMTREEBLK *SharedBlkTrees;
+static SHMTREEBLK *SharedBlockSubtrees;
 
 #define PAYLOAD_MOD 0xF0000000
 
@@ -47,27 +47,27 @@ static SHMTREEBLK *SharedBlkTrees;
 // #define USE_HASH 1
 
 SHMTREE *
-BufTableGetMainTree()
+BufGetMainTree()
 {
 	return SharedBufTree;
 }
 
-void BufTableLockMainTree(LWLockMode mode)
+void BufLockMainTree(LWLockMode mode)
 {
 	LWLockAcquire(shmtree_getlock(SharedBufTree), mode);
 }
 
-void BufTableUnLockMainTree()
+void BufUnLockMainTree()
 {
 	LWLockRelease(shmtree_getlock(SharedBufTree));
 }
 
-void BufTableTryLockTree(SHMTREE *tree, LWLockMode mode)
+void BufTryLockTree(SHMTREE *tree, LWLockMode mode)
 {
 	if (tree) LWLockAcquire(shmtree_getlock(tree), mode);
 }
 
-void BufTableTryUnLockTree(SHMTREE *tree)
+void BufTryUnLockTree(SHMTREE *tree)
 {
 	if (tree) LWLockRelease(shmtree_getlock(tree));
 }
@@ -114,10 +114,10 @@ InitBufTable(int size)
 								  &tinfo,
 								  SHMTREE_ELEM);
 
-	SharedBlkTrees = ShmemInitStruct("Shared Buffer BlkTrees",
+	SharedBlockSubtrees = ShmemInitStruct("Shared Buffer BlkTrees",
 							   shmtree_get_blktree_size(),
 							   &found);
-	shmtree_build_blktree(SharedBlkTrees, SharedBufTree);
+	shmtree_build_blktree(SharedBlockSubtrees, SharedBufTree);
 }
 
 /*
@@ -336,7 +336,7 @@ BufTableDelete(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 long *
 BufTreeStats(void)
 {
-	return shmtree_nodes_used(SharedBufTree, SharedBlkTrees);
+	return shmtree_nodes_used(SharedBufTree, SharedBlockSubtrees);
 }
 
 SHMTREE *
@@ -348,13 +348,13 @@ BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 	subtree = smgr->cached_forks[tagPtr->forkNum];
 	if (!subtree)
 	{
-		subtree = shmtree_alloc_blktree(SharedBlkTrees);
+		subtree = shmtree_alloc_blktree(SharedBlockSubtrees);
 		shmresult = (uintptr_t) shmtree_insert(
 			SharedBufTree, (const uint8_t *) tagPtr, (void *) subtree);
 		// check no collision appeared, if it is => dealloc?
 		if (shmresult != 0)
 		{
-			shmtree_dealloc_blktree(SharedBlkTrees, subtree);
+			shmtree_dealloc_blktree(SharedBlockSubtrees, subtree);
 			subtree = (SHMTREE *) shmresult;
 			elog(WARNING, "install:subtree collision.");
 		}
@@ -373,7 +373,7 @@ BufUnistallSubtree(BufferTag *tagPtr)
 
 	if (subtree)
 	{
-		shmtree_dealloc_blktree(SharedBlkTrees, subtree);
+		shmtree_dealloc_blktree(SharedBlockSubtrees, subtree);
 	}
 	// todo: send message to backends to invalidate cache...
 	// or it is(probably) already done in CacheInvalidateSmgr(rnode);

@@ -184,7 +184,7 @@ struct SHMTREE
 	bool isshared;	/* true if tree is in shared memory */
 };
 
-/* allocation stuff */
+/* allocation */
 static art_node *alloc_node(SHMTREE *shmt, uint8 type);
 static void dealloc_node(SHMTREE *shmt, art_node *n);
 static art_leaf *alloc_leaf(SHMTREE *shmt);
@@ -199,7 +199,7 @@ static art_node ** find_child(art_node *n, uint8 c);
 static int prefix_mismatch(const art_node *n, const uint8 *key, int key_len, int depth);
 static int leaf_prefix_matches(const art_leaf *n, const uint8 *prefix, int prefix_len);
 
-/* nodes maintenance stuff */
+/* nodes maintenance */
 static art_leaf * make_leaf(SHMTREE *shmt, const uint8 *key, int key_len, void *value);
 static void add_child256(art_node256 *n, art_node **ref, uint8 c, void *child);
 static void add_child48(SHMTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child);
@@ -212,18 +212,18 @@ static void remove_child16(SHMTREE *shmt, art_node16 *n, art_node **ref, art_nod
 static void remove_child4(SHMTREE *shmt, art_node4 *n, art_node **ref, art_node **l);
 static void remove_child(SHMTREE *shmt, art_node *n, art_node **ref, uint8 c, art_node **l);
 
-/* tree destroy stuff */
+/* destroy */
 static void destroy_node(SHMTREE *shmt, art_node *n);
 static int art_tree_destroy(SHMTREE *shmt, art_tree *t);
 
-/* basic tree operations */
+/* basic operations */
 static void *art_insert(SHMTREE *shmt, const uint8 *key, int key_len,
                         void *value);
 static void *art_delete(SHMTREE *shmt, const uint8 *key, int key_len);
 static void *art_search(const art_tree *t, const uint8 *key, int key_len);
 static art_leaf * minimum(const art_node *n);
 
-/* iterator stuff */
+/* iterator */
 static int art_iter(art_tree *t, art_callback cb, void *data);
 static int art_iter_prefix(art_tree *t, const uint8 *key, int key_len, art_callback cb,
 						   void *data);
