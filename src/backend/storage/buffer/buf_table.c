@@ -34,7 +34,7 @@ typedef struct
 
 static HTAB *SharedBufHash;
 
-static SHMTREE *SharedBufTree;
+static ARTREE *SharedBufTree;
 
 static FreeListARTree *SharedBlockSubtrees;
 
@@ -46,7 +46,7 @@ static FreeListARTree *SharedBlockSubtrees;
 
 // #define USE_HASH 1
 
-SHMTREE *
+ARTREE *
 BufGetMainTree()
 {
 	return SharedBufTree;
@@ -62,14 +62,14 @@ void BufUnLockMainTree()
 	LWLockRelease(artree_getlock(SharedBufTree));
 }
 
-void BufTryLockTree(SHMTREE *tree, LWLockMode mode)
+void BufTryLockTree(ARTREE *artp, LWLockMode mode)
 {
-	if (tree) LWLockAcquire(artree_getlock(tree), mode);
+	if (artp) LWLockAcquire(artree_getlock(artp), mode);
 }
 
-void BufTryUnLockTree(SHMTREE *tree)
+void BufTryUnLockTree(ARTREE *artp)
 {
-	if (tree) LWLockRelease(artree_getlock(tree));
+	if (artp) LWLockRelease(artree_getlock(artp));
 }
 
 /*
@@ -154,7 +154,7 @@ BufTableHashCode(BufferTag *tagPtr)
  * Caller must hold at least share lock on BufMappingLock for tag's partition
  */
 int
-BufTableLookup(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
+BufTableLookup(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
 #ifdef USE_ART
@@ -226,7 +226,7 @@ BufTableLookup(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
  * Caller must hold exclusive lock on BufMappingLock for tag's partition
  */
 int
-BufTableInsert(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode, int buf_id)
+BufTableInsert(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode, int buf_id)
 {
 	BufferLookupEnt *result;
 	bool		found;
@@ -302,7 +302,7 @@ BufTableInsert(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode, int buf_id)
  * Caller must hold exclusive lock on BufMappingLock for tag's partition
  */
 void
-BufTableDelete(SHMTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
+BufTableDelete(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
 	bool good = false;
@@ -351,10 +351,10 @@ BufTreeStats(void)
 	return artree_nodes_used(SharedBufTree, SharedBlockSubtrees);
 }
 
-SHMTREE *
+ARTREE *
 BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 {
-	SHMTREE *subtree;
+	ARTREE *subtree;
 	uintptr_t shmresult;
 
 	subtree = smgr->cached_forks[tagPtr->forkNum];
@@ -367,7 +367,7 @@ BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 		if (shmresult != 0)
 		{
 			artree_dealloc_subtree(SharedBlockSubtrees, subtree);
-			subtree = (SHMTREE *) shmresult;
+			subtree = (ARTREE *) shmresult;
 			elog(WARNING, "install:subtree collision.");
 		}
 		smgr->cached_forks[tagPtr->forkNum] = subtree;
@@ -378,9 +378,9 @@ BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 void
 BufUnistallSubtree(BufferTag *tagPtr)
 {
-	SHMTREE *subtree;
+	ARTREE *subtree;
 
-	subtree = (SHMTREE *) artree_delete(
+	subtree = (ARTREE *) artree_delete(
 		SharedBufTree, (const uint8 *) tagPtr);
 
 	if (subtree)
@@ -392,17 +392,17 @@ BufUnistallSubtree(BufferTag *tagPtr)
 	// need to check that functionality, so we can move towards subtree recycling
 }
 
-SHMTREE *
+ARTREE *
 BufLookupSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 {
-	SHMTREE *subtree;
+	ARTREE *subtree;
 	
 	// todo: need somehow invalidate subtree (add & check flag inside art_tree?)
 	// but first recycle functionaly required
 	subtree = smgr->cached_forks[tagPtr->forkNum];
 	if (!subtree)
 	{
-		subtree = (SHMTREE *) artree_search(
+		subtree = (ARTREE *) artree_search(
 			SharedBufTree, (const uint8 *) tagPtr);
 		smgr->cached_forks[tagPtr->forkNum] = subtree;
 	}
@@ -410,12 +410,12 @@ BufLookupSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 	return subtree;
 }
 
-SHMTREE *
+ARTREE *
 BufLookupSubtreeNoCache(BufferTag *tagPtr)
 {
-	SHMTREE *subtree;
+	ARTREE *subtree;
 	
-	subtree = (SHMTREE *) artree_search(
+	subtree = (ARTREE *) artree_search(
 		SharedBufTree, (const uint8 *) tagPtr);
 
 	return subtree;

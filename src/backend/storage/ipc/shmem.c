@@ -357,7 +357,7 @@ ShmemInitHash(const char *name,		/* table string name for shmem index */
  *		shared memory tree.
  *
  */
-SHMTREE *
+ARTREE *
 ShmemInitTree(const char *name,		/* tree string name for shmem index */
 			  ARTREECTL *infoP,	/* info about key and entry size */
 			  int tree_flags)	/* info about infoP */
@@ -381,7 +381,7 @@ ShmemInitTree(const char *name,		/* tree string name for shmem index */
 		tree_flags |= ARTREE_ATTACH;
 
 	/* Pass location of hashtable header to hash_create */
-	infoP->tctl = (SHMTREEHDR *) location;
+	infoP->tctl = (ARTMEMHDR *) location;
 
 	return artree_create(name, infoP, tree_flags);
 }

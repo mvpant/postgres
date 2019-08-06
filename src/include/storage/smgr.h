@@ -77,7 +77,7 @@ typedef struct SMgrRelationData
 	/* here we try to cache shared subtrees,
 	 * so 16 bytes of BufferTag search can be skipped
 	 */
-	SHMTREE *cached_forks[MAX_FORKNUM + 1];
+	ARTREE *cached_forks[MAX_FORKNUM + 1];
 
 	/* if unowned, list link in list of all unowned SMgrRelations */
 	dlist_node	node;

@@ -155,10 +155,10 @@ typedef struct FreeListARTree
 /*
  * Header structure for a tree --- contains all changeable info
  *
- * In a shared-memory tree, the SHMTREEHDR is in shared memory, while
- * each backend has a local SHMTREE struct.
+ * In a shared-memory tree, the ARTMEMHDR is in shared memory, while
+ * each backend has a local ARTREE struct.
  */
-struct SHMTREEHDR
+struct ARTMEMHDR
 {
 	FreeListNode freeList[5];
 
@@ -167,13 +167,18 @@ struct SHMTREEHDR
 	int nelem_alloc; /* number of entries to allocate at once */
 };
 
+struct TREEHDR
+{
+
+};
+
 /*
  * Top control structure for tree --- in a shared tree, each backend
  * has its own copy (OK since no fields change at runtime)
  */
-struct SHMTREE
+struct ARTREE
 {
-	SHMTREEHDR *tctl;	 /* => shared control information */
+	ARTMEMHDR *tctl;	 /* => shared control information */
 	art_tree *tree;		 /* allocated right after tctl header struct */
 	TreeAllocFunc alloc; /* memory allocator */
 	MemoryContext tcxt;	 /* memory context if default allocator used */
@@ -185,11 +190,11 @@ struct SHMTREE
 };
 
 /* allocation */
-static art_node *alloc_node(SHMTREE *shmt, uint8 type);
-static void dealloc_node(SHMTREE *shmt, art_node *n);
-static art_leaf *alloc_leaf(SHMTREE *shmt);
-static void dealloc_leaf(SHMTREE *shmt, art_leaf *n);
-static bool element_alloc(SHMTREE *shmt, int nelem, int ntype);
+static art_node *alloc_node(ARTREE *shmt, uint8 type);
+static void dealloc_node(ARTREE *shmt, art_node *n);
+static art_leaf *alloc_leaf(ARTREE *shmt);
+static void dealloc_leaf(ARTREE *shmt, art_leaf *n);
+static bool element_alloc(ARTREE *shmt, int nelem, int ntype);
 
 /* utility */
 static int check_prefix(const art_node *n, const uint8 *key, int key_len, int depth);
@@ -200,26 +205,26 @@ static int prefix_mismatch(const art_node *n, const uint8 *key, int key_len, int
 static int leaf_prefix_matches(const art_leaf *n, const uint8 *prefix, int prefix_len);
 
 /* nodes maintenance */
-static art_leaf * make_leaf(SHMTREE *shmt, const uint8 *key, int key_len, void *value);
+static art_leaf * make_leaf(ARTREE *shmt, const uint8 *key, int key_len, void *value);
 static void add_child256(art_node256 *n, art_node **ref, uint8 c, void *child);
-static void add_child48(SHMTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child);
-static void add_child16(SHMTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child);
-static void add_child4(SHMTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child);
-static void add_child(SHMTREE *shmt, art_node *n, art_node **ref, uint8 c, void *child);
-static void remove_child256(SHMTREE *shmt, art_node256 *n, art_node **ref, uint8 c);
-static void remove_child48(SHMTREE *shmt, art_node48 *n, art_node **ref, uint8 c);
-static void remove_child16(SHMTREE *shmt, art_node16 *n, art_node **ref, art_node **l);
-static void remove_child4(SHMTREE *shmt, art_node4 *n, art_node **ref, art_node **l);
-static void remove_child(SHMTREE *shmt, art_node *n, art_node **ref, uint8 c, art_node **l);
+static void add_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child);
+static void add_child16(ARTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child);
+static void add_child4(ARTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child);
+static void add_child(ARTREE *shmt, art_node *n, art_node **ref, uint8 c, void *child);
+static void remove_child256(ARTREE *shmt, art_node256 *n, art_node **ref, uint8 c);
+static void remove_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c);
+static void remove_child16(ARTREE *shmt, art_node16 *n, art_node **ref, art_node **l);
+static void remove_child4(ARTREE *shmt, art_node4 *n, art_node **ref, art_node **l);
+static void remove_child(ARTREE *shmt, art_node *n, art_node **ref, uint8 c, art_node **l);
 
 /* destroy */
-static void destroy_node(SHMTREE *shmt, art_node *n);
-static int art_tree_destroy(SHMTREE *shmt, art_tree *t);
+static void destroy_node(ARTREE *shmt, art_node *n);
+static int art_tree_destroy(ARTREE *shmt, art_tree *t);
 
 /* basic operations */
-static void *art_insert(SHMTREE *shmt, const uint8 *key, int key_len,
+static void *art_insert(ARTREE *shmt, const uint8 *key, int key_len,
                         void *value);
-static void *art_delete(SHMTREE *shmt, const uint8 *key, int key_len);
+static void *art_delete(ARTREE *shmt, const uint8 *key, int key_len);
 static void *art_search(const art_tree *t, const uint8 *key, int key_len);
 static art_leaf * minimum(const art_node *n);
 
@@ -251,11 +256,11 @@ TreeAlloc(Size size)
 	return MemoryContextAlloc(CurrentTreeCxt, size);
 }
 
-SHMTREE *
+ARTREE *
 artree_create(const char *treename, ARTREECTL *info, int flags)
 {
-    SHMTREE *shmt;
-    SHMTREEHDR *shmth;
+    ARTREE *shmt;
+    ARTMEMHDR *shmth;
     art_tree *art;
 
 	if (flags & ARTREE_SHARED_MEM)
@@ -275,8 +280,8 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
 	}
 
 	/* Initialize the tree structure, plus a copy of the tree name */
-	shmt = (SHMTREE *) TreeAlloc(sizeof(SHMTREE) + strlen(treename) + 1);
-	MemSet(shmt, 0, sizeof(SHMTREE));
+	shmt = (ARTREE *) TreeAlloc(sizeof(ARTREE) + strlen(treename) + 1);
+	MemSet(shmt, 0, sizeof(ARTREE));
 
 	shmt->treename = (char *) (shmt + 1);
 	strcpy(shmt->treename, treename);
@@ -294,7 +299,7 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
 	if (flags & ARTREE_SHARED_MEM)
 	{
 		shmt->tctl = info->tctl;
-		shmt->tree = (art_tree *) (((char *) info->tctl) + sizeof(SHMTREEHDR));
+		shmt->tree = (art_tree *) (((char *) info->tctl) + sizeof(ARTMEMHDR));
 		shmt->tcxt = NULL;
 		shmt->isshared = true;
 
@@ -316,14 +321,14 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
 
 	if (!shmt->tctl)
 	{
-		shmt->tctl = (SHMTREEHDR *) shmt->alloc(sizeof(SHMTREEHDR));
+		shmt->tctl = (ARTMEMHDR *) shmt->alloc(sizeof(ARTMEMHDR));
 		if (!shmt->tctl)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of memory")));
 	}
 
-	MemSet(shmt->tctl, 0, sizeof(SHMTREEHDR));
+	MemSet(shmt->tctl, 0, sizeof(ARTMEMHDR));
 
 	shmth = shmt->tctl;
     art = shmt->tree;
@@ -371,9 +376,9 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
  * allocate some new elements and link them into the indicated free list
  */
 static bool
-element_alloc(SHMTREE *shmt, int nelem, int ntype)
+element_alloc(ARTREE *shmt, int nelem, int ntype)
 {
-    SHMTREEHDR *shmth = shmt->tctl;
+    ARTMEMHDR *shmth = shmt->tctl;
     Size elementSize;
     NODEELEMENT *firstElement;
     NODEELEMENT *tmpElement;
@@ -435,7 +440,7 @@ element_alloc(SHMTREE *shmt, int nelem, int ntype)
 Size
 artree_get_shared_size(ARTREECTL *info, int flags)
 {
-	return sizeof(SHMTREEHDR) + sizeof(art_tree);
+	return sizeof(ARTMEMHDR) + sizeof(art_tree);
 }
 
 Size
@@ -444,19 +449,19 @@ artree_subtreelist_size()
 	Size size, elementSize;
 	size = MAXALIGN(sizeof(FreeListARTree));
 	// we will reuse existing shmtreehdr of sharedbuftree...
-	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + sizeof(SHMTREE *) + sizeof(art_tree);
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + sizeof(ARTREE *) + sizeof(art_tree);
 	size = add_size(size, mul_size(elementSize, NODESUBTREE_NELEM));
 	return size;
 }
 
 LWLock *
-artree_getlock(SHMTREE *shmt)
+artree_getlock(ARTREE *shmt)
 {
     return &shmt->tree->lock;
 }
 
 void
-artree_build_subtreelist(FreeListARTree *artlist, SHMTREE *buftree)
+artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree)
 {
 	// chain and init shmtrees using original copy(share freelists)
 	NODEELEMENT *firstElement;
@@ -466,8 +471,8 @@ artree_build_subtreelist(FreeListARTree *artlist, SHMTREE *buftree)
 	int nelem = NODESUBTREE_NELEM;
 	Size elementSize;
 
-	SHMTREE *shmt;
-	SHMTREEHDR *shmth = buftree->tctl;
+	ARTREE *shmt;
+	ARTMEMHDR *shmth = buftree->tctl;
 	uintptr_t *node_shmt;
 	char *treename = "blktree";
 	char *ptr;
@@ -476,7 +481,7 @@ artree_build_subtreelist(FreeListARTree *artlist, SHMTREE *buftree)
 	CurrentTreeCxt = TopMemoryContext;
 
 	elementSize =
-		MAXALIGN(sizeof(NODEELEMENT)) + sizeof(SHMTREE *) + sizeof(art_tree);
+		MAXALIGN(sizeof(NODEELEMENT)) + sizeof(ARTREE *) + sizeof(art_tree);
 
 	firstElement =
 		(NODEELEMENT *) (((char *) artlist) + MAXALIGN(sizeof(FreeListARTree)));
@@ -486,8 +491,8 @@ artree_build_subtreelist(FreeListARTree *artlist, SHMTREE *buftree)
 	for (i = 0; i < nelem; i++)
 	{
 		// alloc non-shared, but forked shmtree
-		shmt = (SHMTREE *) TreeAlloc(sizeof(SHMTREE) + strlen(treename) + 6);
-		MemSet(shmt, 0, sizeof(SHMTREE));
+		shmt = (ARTREE *) TreeAlloc(sizeof(ARTREE) + strlen(treename) + 6);
+		MemSet(shmt, 0, sizeof(ARTREE));
 		shmt->treename = (char *) (shmt + 1);
 		strcpy(shmt->treename, treename);
 		shmt->keysize = sizeof(BlockNumber);
@@ -502,7 +507,7 @@ artree_build_subtreelist(FreeListARTree *artlist, SHMTREE *buftree)
 		// maybe fix this weird alloc scheme later?
 		shmt->shm_addr = (uintptr_t) node_shmt;
 
-		ptr += sizeof(SHMTREE *);
+		ptr += sizeof(ARTREE *);
 		shmt->tree = (art_tree *) ptr;
 		MemSet(shmt->tree, 0, sizeof(art_tree));
 		shmt->isshared = true;
@@ -523,11 +528,11 @@ artree_build_subtreelist(FreeListARTree *artlist, SHMTREE *buftree)
 	artlist->nentries = NODESUBTREE_NELEM;
 }
 
-SHMTREE *
+ARTREE *
 artree_alloc_subtree(FreeListARTree *artlist)
 {
 	NODEELEMENT *tmpElement;
-	SHMTREE *shmt;
+	ARTREE *shmt;
 	uintptr_t *node_shmt;
 
 	SpinLockAcquire(&artlist->mutex);
@@ -539,14 +544,14 @@ artree_alloc_subtree(FreeListARTree *artlist)
 
 	tmpElement->link = NULL;
 	node_shmt = (uintptr_t *) NODEELEMENT_DATA(tmpElement);
-	shmt = (SHMTREE *) (*node_shmt);
+	shmt = (ARTREE *) (*node_shmt);
 	Assert(shmt->shm_addr == (uintptr_t) node_shmt);
 	// elog(WARNING, "shmtree_alloc_blktree: %p %s", shmt, shmt->treename);
 	return shmt;
 }
 
 void
-artree_dealloc_subtree(FreeListARTree *artlist, SHMTREE *shmt)
+artree_dealloc_subtree(FreeListARTree *artlist, ARTREE *shmt)
 {
 	NODEELEMENT *tmpElement;
 	char *ptr;
@@ -576,7 +581,7 @@ artree_estimate_size(Size keysize)
 	Size		size;
 	long elementSize;
 
-	size = MAXALIGN(sizeof(SHMTREEHDR));
+	size = MAXALIGN(sizeof(ARTMEMHDR));
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node4));
 	size = add_size(size, mul_size(NODE4_NELEM, elementSize));
@@ -599,37 +604,37 @@ artree_estimate_size(Size keysize)
 }
 
 int
-artree_destroy(SHMTREE *shmt)
+artree_destroy(ARTREE *shmt)
 {
     return art_tree_destroy(shmt, shmt->tree);
 }
 
 void *
-artree_insert(SHMTREE *shmt, const uint8 *key, void *value)
+artree_insert(ARTREE *shmt, const uint8 *key, void *value)
 {
     return art_insert(shmt, key, shmt->keysize, value);
 }
 
 void *
-artree_delete(SHMTREE *shmt, const uint8 *key)
+artree_delete(ARTREE *shmt, const uint8 *key)
 {
     return art_delete(shmt, key, shmt->keysize);
 }
 
 void *
-artree_search(SHMTREE *shmt, const uint8 *key)
+artree_search(ARTREE *shmt, const uint8 *key)
 {
     return art_search(shmt->tree, key, shmt->keysize);
 }
 
 int
-artree_iter(SHMTREE *shmt, art_callback cb, void *data)
+artree_iter(ARTREE *shmt, art_callback cb, void *data)
 {
 	return art_iter(shmt->tree, cb, data);
 }
 
 int
-artree_iter_prefix(SHMTREE *shmt,
+artree_iter_prefix(ARTREE *shmt,
 					const uint8 *prefix,
 					int prefix_len,
 					art_callback cb,
@@ -640,13 +645,13 @@ artree_iter_prefix(SHMTREE *shmt,
 }
 
 void
-artree_memory_usage(SHMTREE *shmt)
+artree_memory_usage(ARTREE *shmt)
 {
 
 }
 
 void
-artree_nodes_proportion(SHMTREE *shmt)
+artree_nodes_proportion(ARTREE *shmt)
 {
     art_tree *t = shmt->tree;
 	fprintf(stderr,
@@ -655,9 +660,9 @@ artree_nodes_proportion(SHMTREE *shmt)
 }
 
 long *
-artree_nodes_used(SHMTREE *shmt, FreeListARTree *artlist)
+artree_nodes_used(ARTREE *shmt, FreeListARTree *artlist)
 {
-	SHMTREEHDR *shmth = shmt->tctl;
+	ARTMEMHDR *shmth = shmt->tctl;
 	/* do not bother with lock acquiring */
 	stats[0] = NODELEAF_NELEM - shmth->freeList[4].nentries;
 	stats[1] = NODE4_NELEM - shmth->freeList[0].nentries;
@@ -680,9 +685,9 @@ artree_nodes_used(SHMTREE *shmt, FreeListARTree *artlist)
  * Allocates a node of the given type.
  */
 static art_node *
-alloc_node(SHMTREE *shmt, uint8 type)
+alloc_node(ARTREE *shmt, uint8 type)
 {
-    SHMTREEHDR *shmth = shmt->tctl;
+    ARTMEMHDR *shmth = shmt->tctl;
     NODEELEMENT *tmpElement;
     int freelist_idx;
     art_node *n;
@@ -723,9 +728,9 @@ alloc_node(SHMTREE *shmt, uint8 type)
 }
 
 static void
-dealloc_node(SHMTREE *shmt, art_node *node)
+dealloc_node(ARTREE *shmt, art_node *node)
 {
-    SHMTREEHDR *shmth = shmt->tctl;
+    ARTMEMHDR *shmth = shmt->tctl;
     NODEELEMENT *tmpElement;
     Size elementSize;
 	uint8 freelist_idx;
@@ -767,9 +772,9 @@ dealloc_node(SHMTREE *shmt, art_node *node)
 }
 
 static art_leaf *
-alloc_leaf(SHMTREE *shmt)
+alloc_leaf(ARTREE *shmt)
 {
-    SHMTREEHDR *shmth = shmt->tctl;
+    ARTMEMHDR *shmth = shmt->tctl;
     NODEELEMENT *tmpElement;
     art_leaf *n;
 	uint8 freelist_idx = LEAF_FREELIST_IDX(NODELEAF);
@@ -790,9 +795,9 @@ alloc_leaf(SHMTREE *shmt)
 }
 
 static void
-dealloc_leaf(SHMTREE *shmt, art_leaf *node)
+dealloc_leaf(ARTREE *shmt, art_leaf *node)
 {
-    SHMTREEHDR *shmth = shmt->tctl;
+    ARTMEMHDR *shmth = shmt->tctl;
     NODEELEMENT *tmpElement;
     Size elementSize = MAXALIGN(sizeof(art_leaf));
 	uint8 freelist_idx = LEAF_FREELIST_IDX(NODELEAF);
@@ -817,7 +822,7 @@ dealloc_leaf(SHMTREE *shmt, art_leaf *node)
  * Recursively destroys the tree
  */
 static void
-destroy_node(SHMTREE *shmt, art_node *n)
+destroy_node(ARTREE *shmt, art_node *n)
 {
     int i, idx;
     NodePointer p;
@@ -877,7 +882,7 @@ destroy_node(SHMTREE *shmt, art_node *n)
  * @return 0 on success.
  */
 static int
-art_tree_destroy(SHMTREE *shmt, art_tree *t)
+art_tree_destroy(ARTREE *shmt, art_tree *t)
 {
     destroy_node(shmt, t->root);
 	/* clear dangling pointer to the root node that is in freelist now */
@@ -1065,7 +1070,7 @@ minimum(const art_node *n)
 }
 
 static art_leaf *
-make_leaf(SHMTREE *shmt, const uint8 *key, int key_len, void *value)
+make_leaf(ARTREE *shmt, const uint8 *key, int key_len, void *value)
 {
     art_leaf *l = (art_leaf *) alloc_leaf(shmt);
     l->value = value;
@@ -1103,7 +1108,7 @@ add_child256(art_node256 *n, art_node **ref, uint8 c, void *child)
 }
 
 static void
-add_child48(SHMTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child)
+add_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child)
 {
     if (n->n.num_children < NODE48_MAX) {
         int pos = 0;
@@ -1128,7 +1133,7 @@ add_child48(SHMTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child)
 }
 
 static void
-add_child16(SHMTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child)
+add_child16(ARTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child)
 {
     if (n->n.num_children < NODE16_MAX) {
         unsigned idx, bitfield;
@@ -1187,7 +1192,7 @@ add_child16(SHMTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child)
 }
 
 static void
-add_child4(SHMTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child)
+add_child4(ARTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child)
 {
     if (n->n.num_children < NODE4_MAX) {
         int idx;
@@ -1222,7 +1227,7 @@ add_child4(SHMTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child)
 }
 
 static void
-add_child(SHMTREE *shmt, art_node *n, art_node **ref, uint8 c, void *child)
+add_child(ARTREE *shmt, art_node *n, art_node **ref, uint8 c, void *child)
 {
     switch (n->type) {
     case NODE4:
@@ -1265,7 +1270,7 @@ prefix_mismatch(const art_node *n, const uint8 *key, int key_len, int depth)
 }
 
 static void *
-recursive_insert(SHMTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
+recursive_insert(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
                  int key_len, void *value, int depth, int *old)
 {
     art_node4 *new_node;
@@ -1374,7 +1379,7 @@ RECURSE_SEARCH:;
  * the old value pointer is returned.
  */
 static void *
-art_insert(SHMTREE *shmt, const uint8 *key, int key_len, void *value)
+art_insert(ARTREE *shmt, const uint8 *key, int key_len, void *value)
 {
     int old_val = 0;
     art_tree *t = shmt->tree;
@@ -1384,7 +1389,7 @@ art_insert(SHMTREE *shmt, const uint8 *key, int key_len, void *value)
 }
 
 static void
-remove_child256(SHMTREE *shmt, art_node256 *n, art_node **ref, uint8 c)
+remove_child256(ARTREE *shmt, art_node256 *n, art_node **ref, uint8 c)
 {
     n->children[c] = NULL;
     n->n.num_children--;
@@ -1410,7 +1415,7 @@ remove_child256(SHMTREE *shmt, art_node256 *n, art_node **ref, uint8 c)
 }
 
 static void
-remove_child48(SHMTREE *shmt, art_node48 *n, art_node **ref, uint8 c)
+remove_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c)
 {
     int pos = n->keys[c];
     n->keys[c] = 0;
@@ -1437,7 +1442,7 @@ remove_child48(SHMTREE *shmt, art_node48 *n, art_node **ref, uint8 c)
 }
 
 static void
-remove_child16(SHMTREE *shmt, art_node16 *n, art_node **ref, art_node **l)
+remove_child16(ARTREE *shmt, art_node16 *n, art_node **ref, art_node **l)
 {
     int pos = l - n->children;
     memmove(n->keys + pos, n->keys + pos + 1, n->n.num_children - 1 - pos);
@@ -1457,7 +1462,7 @@ remove_child16(SHMTREE *shmt, art_node16 *n, art_node **ref, art_node **l)
 }
 
 static void
-remove_child4(SHMTREE *shmt, art_node4 *n, art_node **ref, art_node **l)
+remove_child4(ARTREE *shmt, art_node4 *n, art_node **ref, art_node **l)
 {
     int pos = l - n->children;
     memmove(n->keys + pos, n->keys + pos + 1, n->n.num_children - 1 - pos);
@@ -1493,7 +1498,7 @@ remove_child4(SHMTREE *shmt, art_node4 *n, art_node **ref, art_node **l)
 }
 
 static void
-remove_child(SHMTREE *shmt, art_node *n, art_node **ref, uint8 c, art_node **l)
+remove_child(ARTREE *shmt, art_node *n, art_node **ref, uint8 c, art_node **l)
 {
     switch (n->type) {
     case NODE4:
@@ -1510,7 +1515,7 @@ remove_child(SHMTREE *shmt, art_node *n, art_node **ref, uint8 c, art_node **l)
 }
 
 static art_leaf *
-recursive_delete(SHMTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
+recursive_delete(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
                  int key_len, int depth)
 {
     art_node **child;
@@ -1564,7 +1569,7 @@ recursive_delete(SHMTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
  * the value pointer is returned.
  */
 static void *
-art_delete(SHMTREE *shmt, const uint8 *key, int key_len)
+art_delete(ARTREE *shmt, const uint8 *key, int key_len)
 {
     art_tree *t = shmt->tree;
     art_leaf *l = recursive_delete(shmt, t->root, &t->root, key, key_len, 0);

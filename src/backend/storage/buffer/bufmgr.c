@@ -559,7 +559,7 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 		uint32		newHash;	/* hash value for newTag */
 		LWLock	   *newPartitionLock;	/* buffer partition lock for it */
 		int			buf_id;
-        SHMTREE *subtree;
+		ARTREE	   *subtree;
 
 		/* create a tag so we can lookup the buffer */
 		INIT_BUFFERTAG(newTag, reln->rd_smgr->smgr_rnode.node,
@@ -1024,8 +1024,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	BufferDesc *buf;
 	bool		valid;
 	uint32		buf_state;
-    SHMTREE *newSubtree;
-    SHMTREE *oldSubtree;
+	ARTREE	   *newSubtree;
+	ARTREE 	   *oldSubtree;
 
 	/* create a tag so we can lookup the buffer */
 	INIT_BUFFERTAG(newTag, smgr->smgr_rnode.node, forkNum, blockNum);
@@ -1268,7 +1268,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			}
 			else
 			{
-				/* only one partition, only one lock */
+				/* only one subtree, only one lock */
 				BufTryLockTree(newSubtree, LW_EXCLUSIVE);
 			}
 #endif
@@ -1473,7 +1473,7 @@ InvalidateBuffer(BufferDesc *buf)
 	LWLock	   *oldPartitionLock;	/* buffer partition lock for it */
 	uint32		oldFlags;
 	uint32		buf_state;
-	SHMTREE *oldSubtree;
+	ARTREE     *oldSubtree;
 
 	/* Save the original buffer tag before dropping the spinlock */
 	oldTag = buf->tag;
@@ -3084,10 +3084,10 @@ DropRelFileNode_callback(void *data, const uint8 *k, uint32_t k_len, void *val)
 	DropRelFileData *drfd = (DropRelFileData *) data;
 	RelFileNode *rnode = drfd->rnode;
 	BufferTag *tag = (BufferTag *) k;
-	SHMTREE *subtree;
+	ARTREE *subtree;
 	Assert(RelFileNodeEquals(*rnode, tag->rnode));
 
-	subtree = (SHMTREE *) val;
+	subtree = (ARTREE *) val;
 	Assert(subtree == BufLookupSubtreeNoCache(tag));
 	BufTryLockTree(subtree, LW_EXCLUSIVE);
 	artree_iter(subtree, InvalidateBuffer_callback, rnode);

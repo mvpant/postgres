@@ -21,7 +21,7 @@
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(test_artree);
-PG_FUNCTION_INFO_V1(pg_stat_get_shmtree);
+PG_FUNCTION_INFO_V1(pg_stat_buftree);
 
 static void test_art_insert(char *filepath);
 static void test_art_insert_search_delete(char *filepath);
@@ -217,7 +217,7 @@ test_art_insert_search_delete(char *filepath)
 }
 
 Datum
-pg_stat_get_shmtree(PG_FUNCTION_ARGS)
+pg_stat_buftree(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
 	Datum		values[12];
