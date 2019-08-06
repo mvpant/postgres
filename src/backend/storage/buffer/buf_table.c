@@ -158,7 +158,6 @@ BufTableLookup(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
 #ifdef USE_ART
-	bool good = false;
 	uintptr_t shmresult = 0;
 
 	if (subtree)
@@ -178,26 +177,23 @@ BufTableLookup(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 #ifdef VALIDATE_ART
 	if (!shmresult)
 	{
-		good = (result == NULL);
-		if (!good)
+		if (result != NULL)
 		{
-			elog(WARNING, "lookup:shmtree did not found, hash did.");
+			elog(WARNING, "lookup:artree didn't find, hash did.");
 		}
 	}
 	else
 	{
-		good = (result != NULL);
-		if (good)
+		if (result != NULL)
 		{
-			good = result->id == (shmresult & ~PAYLOAD_MOD);
-			if (!good) {
-				elog(WARNING, "lookup:shmtree mismatch. hash=%d tree=%zu",
+			if (result->id != (shmresult & ~PAYLOAD_MOD)) {
+				elog(WARNING, "lookup:artree mismatch. hash=%d tree=%zu",
 					result->id, shmresult & ~PAYLOAD_MOD);
 			}
 		}
 		else
 		{
-			elog(WARNING, "lookup:shmtree found tag, hash not.");
+			elog(WARNING, "lookup:artree found tag, hash didn't.");
 		}
 	}
 #endif
@@ -235,7 +231,6 @@ BufTableInsert(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode, int buf_id)
 	Assert(tagPtr->blockNum != P_NEW);	/* invalid tag */
 
 #ifdef USE_ART
-	bool good = false;
 	uintptr_t shmresult;
 	uint64_t payload = PAYLOAD_MOD | buf_id;
 
@@ -253,28 +248,26 @@ BufTableInsert(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode, int buf_id)
 									&found);
 #endif
 #ifdef VALIDATE_ART
-	if (shmresult) // found existing tag
+	if (shmresult) /* found existing tag */
 	{
-		good = (result != NULL);
-		if (good)
+		if (result != NULL)
 		{
-			good = result->id == (shmresult & ~PAYLOAD_MOD);
-			if (!good)
+			if (result->id != (shmresult & ~PAYLOAD_MOD))
 			{
-				elog(WARNING, "insert:shmtree mismatch. hash=%d told=%zu tnew=%d",
+				elog(WARNING, "insert:artree mismatch. hash=%d told=%zu tnew=%d",
 						result->id, shmresult & ~PAYLOAD_MOD, buf_id);
 			}
 		}
 		else
 		{
-			elog(WARNING, "insert:shmtree found old, hash did not");
+			elog(WARNING, "insert:artree found old, hash did not");
 		}
 	}
-	else // didnt find anything
+	else /* didnt find anything */
 	{
 		if (found)
 		{
-			elog(WARNING, "insert:shmtree did not find, but hash did");
+			elog(WARNING, "insert:artree did not find, but hash did");
 		}
 		result->id = buf_id;
 	}
@@ -305,7 +298,6 @@ void
 BufTableDelete(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 {
 	BufferLookupEnt *result;
-	bool good = false;
 	uintptr_t shmresult;
 
 #ifdef USE_ART
@@ -325,16 +317,15 @@ BufTableDelete(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 #ifdef USE_ART
 	if (!shmresult)
 	{
-		elog(WARNING, "delete:shmtree corrupted");
+		elog(WARNING, "delete:artree corrupted");
 	}
 #endif
 #ifdef VALIDATE_ART
 	else
 	{
-		good = result->id == (shmresult & ~PAYLOAD_MOD);
-		if (!good)
+		if (result->id != (shmresult & ~PAYLOAD_MOD))
 		{
-			elog(WARNING, "delete:shmtree mismatch. hash=%d tree=%zu",
+			elog(WARNING, "delete:artree mismatch. hash=%d tree=%zu",
 					result->id, shmresult & ~PAYLOAD_MOD);
 		}
 	}

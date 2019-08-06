@@ -190,11 +190,11 @@ struct ARTREE
 };
 
 /* allocation */
-static art_node *alloc_node(ARTREE *shmt, uint8 type);
-static void dealloc_node(ARTREE *shmt, art_node *n);
-static art_leaf *alloc_leaf(ARTREE *shmt);
-static void dealloc_leaf(ARTREE *shmt, art_leaf *n);
-static bool element_alloc(ARTREE *shmt, int nelem, int ntype);
+static art_node *alloc_node(ARTREE *artp, uint8 type);
+static void dealloc_node(ARTREE *artp, art_node *n);
+static art_leaf *alloc_leaf(ARTREE *artp);
+static void dealloc_leaf(ARTREE *artp, art_leaf *n);
+static bool element_alloc(ARTREE *artp, int nelem, int ntype);
 
 /* utility */
 static int check_prefix(const art_node *n, const uint8 *key, int key_len, int depth);
@@ -205,26 +205,26 @@ static int prefix_mismatch(const art_node *n, const uint8 *key, int key_len, int
 static int leaf_prefix_matches(const art_leaf *n, const uint8 *prefix, int prefix_len);
 
 /* nodes maintenance */
-static art_leaf * make_leaf(ARTREE *shmt, const uint8 *key, int key_len, void *value);
+static art_leaf * make_leaf(ARTREE *artp, const uint8 *key, int key_len, void *value);
 static void add_child256(art_node256 *n, art_node **ref, uint8 c, void *child);
-static void add_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child);
-static void add_child16(ARTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child);
-static void add_child4(ARTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child);
-static void add_child(ARTREE *shmt, art_node *n, art_node **ref, uint8 c, void *child);
-static void remove_child256(ARTREE *shmt, art_node256 *n, art_node **ref, uint8 c);
-static void remove_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c);
-static void remove_child16(ARTREE *shmt, art_node16 *n, art_node **ref, art_node **l);
-static void remove_child4(ARTREE *shmt, art_node4 *n, art_node **ref, art_node **l);
-static void remove_child(ARTREE *shmt, art_node *n, art_node **ref, uint8 c, art_node **l);
+static void add_child48(ARTREE *artp, art_node48 *n, art_node **ref, uint8 c, void *child);
+static void add_child16(ARTREE *artp, art_node16 *n, art_node **ref, uint8 c, void *child);
+static void add_child4(ARTREE *artp, art_node4 *n, art_node **ref, uint8 c, void *child);
+static void add_child(ARTREE *artp, art_node *n, art_node **ref, uint8 c, void *child);
+static void remove_child256(ARTREE *artp, art_node256 *n, art_node **ref, uint8 c);
+static void remove_child48(ARTREE *artp, art_node48 *n, art_node **ref, uint8 c);
+static void remove_child16(ARTREE *artp, art_node16 *n, art_node **ref, art_node **l);
+static void remove_child4(ARTREE *artp, art_node4 *n, art_node **ref, art_node **l);
+static void remove_child(ARTREE *artp, art_node *n, art_node **ref, uint8 c, art_node **l);
 
 /* destroy */
-static void destroy_node(ARTREE *shmt, art_node *n);
-static int art_tree_destroy(ARTREE *shmt, art_tree *t);
+static void destroy_node(ARTREE *artp, art_node *n);
+static int art_tree_destroy(ARTREE *artp, art_tree *t);
 
 /* basic operations */
-static void *art_insert(ARTREE *shmt, const uint8 *key, int key_len,
+static void *art_insert(ARTREE *artp, const uint8 *key, int key_len,
                         void *value);
-static void *art_delete(ARTREE *shmt, const uint8 *key, int key_len);
+static void *art_delete(ARTREE *artp, const uint8 *key, int key_len);
 static void *art_search(const art_tree *t, const uint8 *key, int key_len);
 static art_leaf * minimum(const art_node *n);
 
@@ -259,8 +259,8 @@ TreeAlloc(Size size)
 ARTREE *
 artree_create(const char *treename, ARTREECTL *info, int flags)
 {
-    ARTREE *shmt;
-    ARTMEMHDR *shmth;
+    ARTREE *artp;
+    ARTMEMHDR *memhdr;
     art_tree *art;
 
 	if (flags & ARTREE_SHARED_MEM)
@@ -280,58 +280,58 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
 	}
 
 	/* Initialize the tree structure, plus a copy of the tree name */
-	shmt = (ARTREE *) TreeAlloc(sizeof(ARTREE) + strlen(treename) + 1);
-	MemSet(shmt, 0, sizeof(ARTREE));
+	artp = (ARTREE *) TreeAlloc(sizeof(ARTREE) + strlen(treename) + 1);
+	MemSet(artp, 0, sizeof(ARTREE));
 
-	shmt->treename = (char *) (shmt + 1);
-	strcpy(shmt->treename, treename);
+	artp->treename = (char *) (artp + 1);
+	strcpy(artp->treename, treename);
 
 	/* If we have a private context, label it with tree's name */
 	if (!(flags & ARTREE_SHARED_MEM))
-		MemoryContextSetIdentifier(CurrentTreeCxt, shmt->treename);
+		MemoryContextSetIdentifier(CurrentTreeCxt, artp->treename);
 
 	/* And select the entry allocation function, too. */
 	if (flags & ARTREE_ALLOC)
-		shmt->alloc = info->alloc;
+		artp->alloc = info->alloc;
 	else
-		shmt->alloc = TreeAlloc;
+		artp->alloc = TreeAlloc;
 
 	if (flags & ARTREE_SHARED_MEM)
 	{
-		shmt->tctl = info->tctl;
-		shmt->tree = (art_tree *) (((char *) info->tctl) + sizeof(ARTMEMHDR));
-		shmt->tcxt = NULL;
-		shmt->isshared = true;
+		artp->tctl = info->tctl;
+		artp->tree = (art_tree *) (((char *) info->tctl) + sizeof(ARTMEMHDR));
+		artp->tcxt = NULL;
+		artp->isshared = true;
 
 		if (flags & ARTREE_ATTACH)
 		{
-			shmth = shmt->tctl;
-			shmt->keysize = shmth->keysize;
+			memhdr = artp->tctl;
+			artp->keysize = memhdr->keysize;
 
-			return shmt;
+			return artp;
 		}
 	}
 	else
 	{
-		shmt->tctl = NULL;
-		shmt->tree = NULL;
-		shmt->tcxt = CurrentTreeCxt;
-		shmt->isshared = false;
+		artp->tctl = NULL;
+		artp->tree = NULL;
+		artp->tcxt = CurrentTreeCxt;
+		artp->isshared = false;
 	}
 
-	if (!shmt->tctl)
+	if (!artp->tctl)
 	{
-		shmt->tctl = (ARTMEMHDR *) shmt->alloc(sizeof(ARTMEMHDR));
-		if (!shmt->tctl)
+		artp->tctl = (ARTMEMHDR *) artp->alloc(sizeof(ARTMEMHDR));
+		if (!artp->tctl)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of memory")));
 	}
 
-	MemSet(shmt->tctl, 0, sizeof(ARTMEMHDR));
+	MemSet(artp->tctl, 0, sizeof(ARTMEMHDR));
 
-	shmth = shmt->tctl;
-    art = shmt->tree;
+	memhdr = artp->tctl;
+    art = artp->tree;
     art->root = NULL;
 	art->leaves = 0;
     art->size4 = 0;
@@ -348,37 +348,37 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
 	if (flags & ARTREE_ELEM)
 	{
 		// Assert(info->entrysize >= info->keysize);
-		shmth->keysize = info->keysize;
-		shmth->entrysize = info->entrysize;
+		memhdr->keysize = info->keysize;
+		memhdr->entrysize = info->entrysize;
 	}
 
 	/* make local copies of heavily-used constant fields */
-	shmt->keysize = shmth->keysize;
+	artp->keysize = memhdr->keysize;
 
 	if (flags & ARTREE_SHARED_MEM)
 	{
-        if (!element_alloc(shmt, NODE4_NELEM, NODE4))
+        if (!element_alloc(artp, NODE4_NELEM, NODE4))
             ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
-        if (!element_alloc(shmt, NODE16_NELEM, NODE16))
+        if (!element_alloc(artp, NODE16_NELEM, NODE16))
             ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
-        if (!element_alloc(shmt, NODE48_NELEM, NODE48))
+        if (!element_alloc(artp, NODE48_NELEM, NODE48))
             ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
-        if (!element_alloc(shmt, NODE256_NELEM, NODE256))
+        if (!element_alloc(artp, NODE256_NELEM, NODE256))
             ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
-        if (!element_alloc(shmt, NODELEAF_NELEM, NODELEAF))
+        if (!element_alloc(artp, NODELEAF_NELEM, NODELEAF))
             ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
 	}
 
-    return shmt;
+    return artp;
 }
 
 /*
  * allocate some new elements and link them into the indicated free list
  */
 static bool
-element_alloc(ARTREE *shmt, int nelem, int ntype)
+element_alloc(ARTREE *artp, int nelem, int ntype)
 {
-    ARTMEMHDR *shmth = shmt->tctl;
+    ARTMEMHDR *memhdr = artp->tctl;
     Size elementSize;
     NODEELEMENT *firstElement;
     NODEELEMENT *tmpElement;
@@ -403,14 +403,14 @@ element_alloc(ARTREE *shmt, int nelem, int ntype)
         elementSize += MAXALIGN(sizeof(art_node256));
         break;
     case NODELEAF:
-        elementSize += MAXALIGN(sizeof(art_leaf)) + shmt->keysize;
+        elementSize += MAXALIGN(sizeof(art_leaf)) + artp->keysize;
         break;
     default:
 		elog(ERROR, "element_alloc: unknown art_node type");
     }
 
-    CurrentTreeCxt = shmt->tcxt;
-    firstElement = (NODEELEMENT *) shmt->alloc(nelem * elementSize);
+    CurrentTreeCxt = artp->tcxt;
+    firstElement = (NODEELEMENT *) artp->alloc(nelem * elementSize);
 
     if (!firstElement)
         return false;
@@ -424,15 +424,15 @@ element_alloc(ARTREE *shmt, int nelem, int ntype)
         tmpElement = (NODEELEMENT *) (((char *) tmpElement) + elementSize);
     }
     
-    SpinLockInit(&shmth->freeList[freelist_idx].mutex);
-    // SpinLockAcquire(&shmth->freeList[freelist_idx].mutex);
+    SpinLockInit(&memhdr->freeList[freelist_idx].mutex);
+    // SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
 
     /* freelist could be nonempty if two backends did this concurrently */
-    firstElement->link = shmth->freeList[freelist_idx].freeList;
-    shmth->freeList[freelist_idx].freeList = prevElement;
-    shmth->freeList[freelist_idx].nentries = nelem;
+    firstElement->link = memhdr->freeList[freelist_idx].freeList;
+    memhdr->freeList[freelist_idx].freeList = prevElement;
+    memhdr->freeList[freelist_idx].nentries = nelem;
 
-    // SpinLockRelease(&shmth->freeList[freelist_idx].mutex);
+    // SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
 
 	return true;
 }
@@ -455,9 +455,9 @@ artree_subtreelist_size()
 }
 
 LWLock *
-artree_getlock(ARTREE *shmt)
+artree_getlock(ARTREE *artp)
 {
-    return &shmt->tree->lock;
+    return &artp->tree->lock;
 }
 
 void
@@ -471,8 +471,8 @@ artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree)
 	int nelem = NODESUBTREE_NELEM;
 	Size elementSize;
 
-	ARTREE *shmt;
-	ARTMEMHDR *shmth = buftree->tctl;
+	ARTREE *artp;
+	ARTMEMHDR *memhdr = buftree->tctl;
 	uintptr_t *node_shmt;
 	char *treename = "blktree";
 	char *ptr;
@@ -491,29 +491,29 @@ artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree)
 	for (i = 0; i < nelem; i++)
 	{
 		// alloc non-shared, but forked shmtree
-		shmt = (ARTREE *) TreeAlloc(sizeof(ARTREE) + strlen(treename) + 6);
-		MemSet(shmt, 0, sizeof(ARTREE));
-		shmt->treename = (char *) (shmt + 1);
-		strcpy(shmt->treename, treename);
-		shmt->keysize = sizeof(BlockNumber);
-		shmt->tctl = shmth;
+		artp = (ARTREE *) TreeAlloc(sizeof(ARTREE) + strlen(treename) + 6);
+		MemSet(artp, 0, sizeof(ARTREE));
+		artp->treename = (char *) (artp + 1);
+		strcpy(artp->treename, treename);
+		artp->keysize = sizeof(BlockNumber);
+		artp->tctl = memhdr;
 
-		sprintf(shmt->treename + strlen(treename), "%d", i);
+		sprintf(artp->treename + strlen(treename), "%d", i);
 		// skip nodelement, next is shmtree pointer
 		ptr = (((char *) tmpElement) + MAXALIGN(sizeof(NODEELEMENT)));
 		node_shmt = (uintptr_t *) ptr;
-		*node_shmt = (uintptr_t) shmt;
+		*node_shmt = (uintptr_t) artp;
 		// save spot in shared memory, that can be used for deallocation
 		// maybe fix this weird alloc scheme later?
-		shmt->shm_addr = (uintptr_t) node_shmt;
+		artp->shm_addr = (uintptr_t) node_shmt;
 
 		ptr += sizeof(ARTREE *);
-		shmt->tree = (art_tree *) ptr;
-		MemSet(shmt->tree, 0, sizeof(art_tree));
-		shmt->isshared = true;
+		artp->tree = (art_tree *) ptr;
+		MemSet(artp->tree, 0, sizeof(art_tree));
+		artp->isshared = true;
 
-		LWLockInitialize(&shmt->tree->lock, trancheid);
-		LWLockRegisterTranche(shmt->tree->lock.tranche, "blktree");
+		LWLockInitialize(&artp->tree->lock, trancheid);
+		LWLockRegisterTranche(artp->tree->lock.tranche, "blktree");
 
 		Assert(node_shmt);
 		Assert(*node_shmt);
@@ -532,7 +532,7 @@ ARTREE *
 artree_alloc_subtree(FreeListARTree *artlist)
 {
 	NODEELEMENT *tmpElement;
-	ARTREE *shmt;
+	ARTREE *artp;
 	uintptr_t *node_shmt;
 
 	SpinLockAcquire(&artlist->mutex);
@@ -544,28 +544,28 @@ artree_alloc_subtree(FreeListARTree *artlist)
 
 	tmpElement->link = NULL;
 	node_shmt = (uintptr_t *) NODEELEMENT_DATA(tmpElement);
-	shmt = (ARTREE *) (*node_shmt);
-	Assert(shmt->shm_addr == (uintptr_t) node_shmt);
-	// elog(WARNING, "shmtree_alloc_blktree: %p %s", shmt, shmt->treename);
-	return shmt;
+	artp = (ARTREE *) (*node_shmt);
+	Assert(artp->shm_addr == (uintptr_t) node_shmt);
+	// elog(WARNING, "shmtree_alloc_blktree: %p %s", artp, artp->treename);
+	return artp;
 }
 
 void
-artree_dealloc_subtree(FreeListARTree *artlist, ARTREE *shmt)
+artree_dealloc_subtree(FreeListARTree *artlist, ARTREE *artp)
 {
 	NODEELEMENT *tmpElement;
 	char *ptr;
 	uintptr_t *node_shmt;
 
-	// elog(WARNING, "shmtree_dealloc_blktree: %p %s", shmt, shmt->treename);
+	// elog(WARNING, "shmtree_dealloc_blktree: %p %s", artp, artp->treename);
 
     // maybe fix this weird alloc scheme later?
-	tmpElement = NODEELEMENT_LINK(shmt->shm_addr);
+	tmpElement = NODEELEMENT_LINK(artp->shm_addr);
 	ptr = NODEELEMENT_DATA(tmpElement);
     node_shmt = (uintptr_t *) ptr;
 	Assert(node_shmt);
-    Assert(*node_shmt == (uintptr_t) shmt);
-	Assert(shmt->tree->root == NULL);
+    Assert(*node_shmt == (uintptr_t) artp);
+	Assert(artp->tree->root == NULL);
 
 	SpinLockAcquire(&artlist->mutex);
 	tmpElement->link = artlist->freeList;
@@ -604,71 +604,71 @@ artree_estimate_size(Size keysize)
 }
 
 int
-artree_destroy(ARTREE *shmt)
+artree_destroy(ARTREE *artp)
 {
-    return art_tree_destroy(shmt, shmt->tree);
+    return art_tree_destroy(artp, artp->tree);
 }
 
 void *
-artree_insert(ARTREE *shmt, const uint8 *key, void *value)
+artree_insert(ARTREE *artp, const uint8 *key, void *value)
 {
-    return art_insert(shmt, key, shmt->keysize, value);
+    return art_insert(artp, key, artp->keysize, value);
 }
 
 void *
-artree_delete(ARTREE *shmt, const uint8 *key)
+artree_delete(ARTREE *artp, const uint8 *key)
 {
-    return art_delete(shmt, key, shmt->keysize);
+    return art_delete(artp, key, artp->keysize);
 }
 
 void *
-artree_search(ARTREE *shmt, const uint8 *key)
+artree_search(ARTREE *artp, const uint8 *key)
 {
-    return art_search(shmt->tree, key, shmt->keysize);
+    return art_search(artp->tree, key, artp->keysize);
 }
 
 int
-artree_iter(ARTREE *shmt, art_callback cb, void *data)
+artree_iter(ARTREE *artp, art_callback cb, void *data)
 {
-	return art_iter(shmt->tree, cb, data);
+	return art_iter(artp->tree, cb, data);
 }
 
 int
-artree_iter_prefix(ARTREE *shmt,
+artree_iter_prefix(ARTREE *artp,
 					const uint8 *prefix,
 					int prefix_len,
 					art_callback cb,
 					void *data)
 {
 	Assert(prefix_len > 0);
-	return art_iter_prefix(shmt->tree, prefix, prefix_len, cb, data);
+	return art_iter_prefix(artp->tree, prefix, prefix_len, cb, data);
 }
 
 void
-artree_memory_usage(ARTREE *shmt)
+artree_memory_usage(ARTREE *artp)
 {
 
 }
 
 void
-artree_nodes_proportion(ARTREE *shmt)
+artree_nodes_proportion(ARTREE *artp)
 {
-    art_tree *t = shmt->tree;
+    art_tree *t = artp->tree;
 	fprintf(stderr,
 			"Node4: %u Node16: %u Node48: %u Node256: %u\n",
 			t->size4, t->size16, t->size48, t->size256);
 }
 
 long *
-artree_nodes_used(ARTREE *shmt, FreeListARTree *artlist)
+artree_nodes_used(ARTREE *artp, FreeListARTree *artlist)
 {
-	ARTMEMHDR *shmth = shmt->tctl;
+	ARTMEMHDR *memhdr = artp->tctl;
 	/* do not bother with lock acquiring */
-	stats[0] = NODELEAF_NELEM - shmth->freeList[4].nentries;
-	stats[1] = NODE4_NELEM - shmth->freeList[0].nentries;
-	stats[2] = NODE16_NELEM - shmth->freeList[1].nentries;
-	stats[3] = NODE48_NELEM - shmth->freeList[2].nentries;
-	stats[4] = NODE256_NELEM - shmth->freeList[3].nentries;
+	stats[0] = NODELEAF_NELEM - memhdr->freeList[4].nentries;
+	stats[1] = NODE4_NELEM - memhdr->freeList[0].nentries;
+	stats[2] = NODE16_NELEM - memhdr->freeList[1].nentries;
+	stats[3] = NODE48_NELEM - memhdr->freeList[2].nentries;
+	stats[4] = NODE256_NELEM - memhdr->freeList[3].nentries;
 	stats[5] = NODESUBTREE_NELEM - artlist->nentries;
 	stats[6] = NODELEAF_NELEM;
 	stats[7] = NODE4_NELEM;
@@ -685,25 +685,25 @@ artree_nodes_used(ARTREE *shmt, FreeListARTree *artlist)
  * Allocates a node of the given type.
  */
 static art_node *
-alloc_node(ARTREE *shmt, uint8 type)
+alloc_node(ARTREE *artp, uint8 type)
 {
-    ARTMEMHDR *shmth = shmt->tctl;
+    ARTMEMHDR *memhdr = artp->tctl;
     NODEELEMENT *tmpElement;
     int freelist_idx;
     art_node *n;
 
 	switch (type) {
 	case NODE4:
-		shmt->tree->size4++;
+		artp->tree->size4++;
 		break;
 	case NODE16:
-		shmt->tree->size16++;
+		artp->tree->size16++;
 		break;
 	case NODE48:
-		shmt->tree->size48++;
+		artp->tree->size48++;
 		break;
 	case NODE256:
-		shmt->tree->size256++;
+		artp->tree->size256++;
 		break;
 	default:
 		elog(ERROR, "alloc_node: unknown art_node type");
@@ -711,13 +711,13 @@ alloc_node(ARTREE *shmt, uint8 type)
 
 	freelist_idx = NODE_FREELIST_IDX(type);
 
-    SpinLockAcquire(&shmth->freeList[freelist_idx].mutex);
+    SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
 
-    tmpElement = shmth->freeList[freelist_idx].freeList;
-    shmth->freeList[freelist_idx].freeList = tmpElement->link;
-    shmth->freeList[freelist_idx].nentries--;
+    tmpElement = memhdr->freeList[freelist_idx].freeList;
+    memhdr->freeList[freelist_idx].freeList = tmpElement->link;
+    memhdr->freeList[freelist_idx].nentries--;
 
-    SpinLockRelease(&shmth->freeList[freelist_idx].mutex);
+    SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
 
 	tmpElement->link = NULL;
 
@@ -728,9 +728,9 @@ alloc_node(ARTREE *shmt, uint8 type)
 }
 
 static void
-dealloc_node(ARTREE *shmt, art_node *node)
+dealloc_node(ARTREE *artp, art_node *node)
 {
-    ARTMEMHDR *shmth = shmt->tctl;
+    ARTMEMHDR *memhdr = artp->tctl;
     NODEELEMENT *tmpElement;
     Size elementSize;
 	uint8 freelist_idx;
@@ -739,19 +739,19 @@ dealloc_node(ARTREE *shmt, art_node *node)
 	switch (type) {
     case NODE4:
         elementSize = MAXALIGN(sizeof(art_node4));
-		shmt->tree->size4--;
+		artp->tree->size4--;
         break;
     case NODE16:
         elementSize = MAXALIGN(sizeof(art_node16));
-		shmt->tree->size16--;
+		artp->tree->size16--;
         break;
     case NODE48:
         elementSize = MAXALIGN(sizeof(art_node48));
-		shmt->tree->size48--;
+		artp->tree->size48--;
         break;
     case NODE256:
         elementSize = MAXALIGN(sizeof(art_node256));
-		shmt->tree->size256--;
+		artp->tree->size256--;
         break;
     default:
         elog(ERROR, "dealloc_node: unknown art_node type");
@@ -761,43 +761,43 @@ dealloc_node(ARTREE *shmt, art_node *node)
     tmpElement = NODEELEMENT_LINK(node);
 	MemSet(node, 0, elementSize);
 
-    SpinLockAcquire(&shmth->freeList[freelist_idx].mutex);
+    SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
 
-    tmpElement->link = shmth->freeList[freelist_idx].freeList;
-    shmth->freeList[freelist_idx].freeList = tmpElement;
-    shmth->freeList[freelist_idx].nentries++;
+    tmpElement->link = memhdr->freeList[freelist_idx].freeList;
+    memhdr->freeList[freelist_idx].freeList = tmpElement;
+    memhdr->freeList[freelist_idx].nentries++;
 
-    SpinLockRelease(&shmth->freeList[freelist_idx].mutex);
+    SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
 	// elog(WARNING, "dealloc_node: %zu type=%d", (uintptr_t) node, type);
 }
 
 static art_leaf *
-alloc_leaf(ARTREE *shmt)
+alloc_leaf(ARTREE *artp)
 {
-    ARTMEMHDR *shmth = shmt->tctl;
+    ARTMEMHDR *memhdr = artp->tctl;
     NODEELEMENT *tmpElement;
     art_leaf *n;
 	uint8 freelist_idx = LEAF_FREELIST_IDX(NODELEAF);
 
-    SpinLockAcquire(&shmth->freeList[freelist_idx].mutex);
+    SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
 
-    tmpElement = shmth->freeList[freelist_idx].freeList;
-    shmth->freeList[freelist_idx].freeList = tmpElement->link;
-    shmth->freeList[freelist_idx].nentries--;
+    tmpElement = memhdr->freeList[freelist_idx].freeList;
+    memhdr->freeList[freelist_idx].freeList = tmpElement->link;
+    memhdr->freeList[freelist_idx].nentries--;
 
-    SpinLockRelease(&shmth->freeList[freelist_idx].mutex);
+    SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
 
 	tmpElement->link = NULL;
-	shmt->tree->leaves++;
+	artp->tree->leaves++;
 
     n = (art_leaf *) NODEELEMENT_DATA(tmpElement);
     return n;
 }
 
 static void
-dealloc_leaf(ARTREE *shmt, art_leaf *node)
+dealloc_leaf(ARTREE *artp, art_leaf *node)
 {
-    ARTMEMHDR *shmth = shmt->tctl;
+    ARTMEMHDR *memhdr = artp->tctl;
     NODEELEMENT *tmpElement;
     Size elementSize = MAXALIGN(sizeof(art_leaf));
 	uint8 freelist_idx = LEAF_FREELIST_IDX(NODELEAF);
@@ -807,22 +807,22 @@ dealloc_leaf(ARTREE *shmt, art_leaf *node)
 
     MemSet(node, 0, elementSize);
 
-    SpinLockAcquire(&shmth->freeList[freelist_idx].mutex);
+    SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
 
-    tmpElement->link = shmth->freeList[freelist_idx].freeList;
-    shmth->freeList[freelist_idx].freeList = tmpElement;
-    shmth->freeList[freelist_idx].nentries++;
+    tmpElement->link = memhdr->freeList[freelist_idx].freeList;
+    memhdr->freeList[freelist_idx].freeList = tmpElement;
+    memhdr->freeList[freelist_idx].nentries++;
 
-    SpinLockRelease(&shmth->freeList[freelist_idx].mutex);
+    SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
 
-	shmt->tree->leaves--;
+	artp->tree->leaves--;
 }
 
 /*
  * Recursively destroys the tree
  */
 static void
-destroy_node(ARTREE *shmt, art_node *n)
+destroy_node(ARTREE *artp, art_node *n)
 {
     int i, idx;
     NodePointer p;
@@ -832,7 +832,7 @@ destroy_node(ARTREE *shmt, art_node *n)
     }
     if (IS_LEAF(n)) {
         // pfree(LEAF_RAW(n));
-        dealloc_leaf(shmt, LEAF_RAW(n));
+        dealloc_leaf(artp, LEAF_RAW(n));
         return;
     }
 
@@ -840,14 +840,14 @@ destroy_node(ARTREE *shmt, art_node *n)
     case NODE4:
         p.p1 = (art_node4 *) n;
         for (i = 0; i < n->num_children; i++) {
-            destroy_node(shmt, p.p1->children[i]);
+            destroy_node(artp, p.p1->children[i]);
         }
         break;
 
     case NODE16:
         p.p2 = (art_node16 *) n;
         for (i = 0; i < n->num_children; i++) {
-            destroy_node(shmt, p.p2->children[i]);
+            destroy_node(artp, p.p2->children[i]);
         }
         break;
 
@@ -857,7 +857,7 @@ destroy_node(ARTREE *shmt, art_node *n)
             idx = ((art_node48 *) n)->keys[i];
             if (!idx)
                 continue;
-            destroy_node(shmt, p.p3->children[idx - 1]);
+            destroy_node(artp, p.p3->children[idx - 1]);
         }
         break;
 
@@ -865,7 +865,7 @@ destroy_node(ARTREE *shmt, art_node *n)
         p.p4 = (art_node256 *) n;
         for (i = 0; i < 256; i++) {
             if (p.p4->children[i])
-                destroy_node(shmt, p.p4->children[i]);
+                destroy_node(artp, p.p4->children[i]);
         }
         break;
 
@@ -874,7 +874,7 @@ destroy_node(ARTREE *shmt, art_node *n)
     }
 
     // pfree(n);
-    dealloc_node(shmt, n);
+    dealloc_node(artp, n);
 }
 
 /**
@@ -882,9 +882,9 @@ destroy_node(ARTREE *shmt, art_node *n)
  * @return 0 on success.
  */
 static int
-art_tree_destroy(ARTREE *shmt, art_tree *t)
+art_tree_destroy(ARTREE *artp, art_tree *t)
 {
-    destroy_node(shmt, t->root);
+    destroy_node(artp, t->root);
 	/* clear dangling pointer to the root node that is in freelist now */
 	t->root = NULL;
     return 0;
@@ -1070,9 +1070,9 @@ minimum(const art_node *n)
 }
 
 static art_leaf *
-make_leaf(ARTREE *shmt, const uint8 *key, int key_len, void *value)
+make_leaf(ARTREE *artp, const uint8 *key, int key_len, void *value)
 {
-    art_leaf *l = (art_leaf *) alloc_leaf(shmt);
+    art_leaf *l = (art_leaf *) alloc_leaf(artp);
     l->value = value;
     l->key_len = key_len;
     memcpy(l->key, key, key_len);
@@ -1108,7 +1108,7 @@ add_child256(art_node256 *n, art_node **ref, uint8 c, void *child)
 }
 
 static void
-add_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child)
+add_child48(ARTREE *artp, art_node48 *n, art_node **ref, uint8 c, void *child)
 {
     if (n->n.num_children < NODE48_MAX) {
         int pos = 0;
@@ -1118,7 +1118,7 @@ add_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child)
         n->keys[c] = pos + 1;
         n->n.num_children++;
     } else {
-        art_node256 *new_node = (art_node256 *) alloc_node(shmt, NODE256);
+        art_node256 *new_node = (art_node256 *) alloc_node(artp, NODE256);
         for (int i = 0; i < 256; i++) {
             if (n->keys[i]) {
                 new_node->children[i] = n->children[n->keys[i] - 1];
@@ -1127,13 +1127,13 @@ add_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c, void *child)
         copy_header((art_node *) new_node, (art_node *) n);
         *ref = (art_node *) new_node;
         // pfree(n);
-        dealloc_node(shmt, (art_node *) n);
+        dealloc_node(artp, (art_node *) n);
         add_child256(new_node, ref, c, child);
     }
 }
 
 static void
-add_child16(ARTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child)
+add_child16(ARTREE *artp, art_node16 *n, art_node **ref, uint8 c, void *child)
 {
     if (n->n.num_children < NODE16_MAX) {
         unsigned idx, bitfield;
@@ -1175,7 +1175,7 @@ add_child16(ARTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child)
         n->n.num_children++;
 
     } else {
-        art_node48 *new_node = (art_node48 *) alloc_node(shmt, NODE48);
+        art_node48 *new_node = (art_node48 *) alloc_node(artp, NODE48);
 
         // Copy the child pointers and populate the key map
         memcpy(new_node->children, n->children,
@@ -1186,13 +1186,13 @@ add_child16(ARTREE *shmt, art_node16 *n, art_node **ref, uint8 c, void *child)
         copy_header((art_node *) new_node, (art_node *) n);
         *ref = (art_node *) new_node;
         // pfree(n);
-        dealloc_node(shmt, (art_node *) n);
-        add_child48(shmt, new_node, ref, c, child);
+        dealloc_node(artp, (art_node *) n);
+        add_child48(artp, new_node, ref, c, child);
     }
 }
 
 static void
-add_child4(ARTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child)
+add_child4(ARTREE *artp, art_node4 *n, art_node **ref, uint8 c, void *child)
 {
     if (n->n.num_children < NODE4_MAX) {
         int idx;
@@ -1212,7 +1212,7 @@ add_child4(ARTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child)
         n->n.num_children++;
 
     } else {
-        art_node16 *new_node = (art_node16 *) alloc_node(shmt, NODE16);
+        art_node16 *new_node = (art_node16 *) alloc_node(artp, NODE16);
 
         // Copy the child pointers and the key map
         memcpy(new_node->children, n->children,
@@ -1221,21 +1221,21 @@ add_child4(ARTREE *shmt, art_node4 *n, art_node **ref, uint8 c, void *child)
         copy_header((art_node *) new_node, (art_node *) n);
         *ref = (art_node *) new_node;
         // pfree(n);
-        dealloc_node(shmt, (art_node *) n);
-        add_child16(shmt, new_node, ref, c, child);
+        dealloc_node(artp, (art_node *) n);
+        add_child16(artp, new_node, ref, c, child);
     }
 }
 
 static void
-add_child(ARTREE *shmt, art_node *n, art_node **ref, uint8 c, void *child)
+add_child(ARTREE *artp, art_node *n, art_node **ref, uint8 c, void *child)
 {
     switch (n->type) {
     case NODE4:
-        return add_child4(shmt, (art_node4 *) n, ref, c, child);
+        return add_child4(artp, (art_node4 *) n, ref, c, child);
     case NODE16:
-        return add_child16(shmt, (art_node16 *) n, ref, c, child);
+        return add_child16(artp, (art_node16 *) n, ref, c, child);
     case NODE48:
-        return add_child48(shmt, (art_node48 *) n, ref, c, child);
+        return add_child48(artp, (art_node48 *) n, ref, c, child);
     case NODE256:
         return add_child256((art_node256 *) n, ref, c, child);
     default:
@@ -1270,7 +1270,7 @@ prefix_mismatch(const art_node *n, const uint8 *key, int key_len, int depth)
 }
 
 static void *
-recursive_insert(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
+recursive_insert(ARTREE *artp, art_node *n, art_node **ref, const uint8 *key,
                  int key_len, void *value, int depth, int *old)
 {
     art_node4 *new_node;
@@ -1278,7 +1278,7 @@ recursive_insert(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
     art_node **child;
     // If we are at a NULL node, inject a leaf
     if (!n) {
-        *ref = (art_node *) SET_LEAF(make_leaf(shmt, key, key_len, value));
+        *ref = (art_node *) SET_LEAF(make_leaf(artp, key, key_len, value));
         return NULL;
     }
 
@@ -1299,10 +1299,10 @@ recursive_insert(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
         }
 
         // New value, we must split the leaf into a node4
-        new_node = (art_node4 *) alloc_node(shmt, NODE4);
+        new_node = (art_node4 *) alloc_node(artp, NODE4);
 
         // Create a new leaf
-        l2 = make_leaf(shmt, key, key_len, value);
+        l2 = make_leaf(artp, key, key_len, value);
 
         // Determine longest prefix
         longest_prefix = longest_common_prefix(l, l2, depth);
@@ -1311,9 +1311,9 @@ recursive_insert(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
                Min(MAX_PREFIX_LEN, longest_prefix));
         // Add the leafs to the new node4
         *ref = (art_node *) new_node;
-        add_child4(shmt, new_node, ref, l->key[depth + longest_prefix],
+        add_child4(artp, new_node, ref, l->key[depth + longest_prefix],
                    SET_LEAF(l));
-        add_child4(shmt, new_node, ref, l2->key[depth + longest_prefix],
+        add_child4(artp, new_node, ref, l2->key[depth + longest_prefix],
                    SET_LEAF(l2));
         return NULL;
     }
@@ -1328,7 +1328,7 @@ recursive_insert(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
         }
 
         // Create a new node
-        new_node = (art_node4 *) alloc_node(shmt, NODE4);
+        new_node = (art_node4 *) alloc_node(artp, NODE4);
         *ref = (art_node *) new_node;
         new_node->n.partial_len = prefix_diff;
         memcpy(new_node->n.partial, n->partial,
@@ -1336,21 +1336,21 @@ recursive_insert(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
 
         // Adjust the prefix of the old node
         if (n->partial_len <= MAX_PREFIX_LEN) {
-            add_child4(shmt, new_node, ref, n->partial[prefix_diff], n);
+            add_child4(artp, new_node, ref, n->partial[prefix_diff], n);
             n->partial_len -= (prefix_diff + 1);
             memmove(n->partial, n->partial + prefix_diff + 1,
                     Min(MAX_PREFIX_LEN, n->partial_len));
         } else {
             n->partial_len -= (prefix_diff + 1);
             l = minimum(n);
-            add_child4(shmt, new_node, ref, l->key[depth + prefix_diff], n);
+            add_child4(artp, new_node, ref, l->key[depth + prefix_diff], n);
             memcpy(n->partial, l->key + depth + prefix_diff + 1,
                    Min(MAX_PREFIX_LEN, n->partial_len));
         }
 
         // Insert the new leaf
-        l = make_leaf(shmt, key, key_len, value);
-        add_child4(shmt, new_node, ref, key[depth + prefix_diff], SET_LEAF(l));
+        l = make_leaf(artp, key, key_len, value);
+        add_child4(artp, new_node, ref, key[depth + prefix_diff], SET_LEAF(l));
         return NULL;
     }
 
@@ -1359,13 +1359,13 @@ RECURSE_SEARCH:;
     // Find a child to recurse to
     child = find_child(n, key[depth]);
     if (child) {
-        return recursive_insert(shmt, *child, child, key, key_len, value,
+        return recursive_insert(artp, *child, child, key, key_len, value,
                                 depth + 1, old);
     }
 
     // No child, node goes within us
-    l = make_leaf(shmt, key, key_len, value);
-    add_child(shmt, n, ref, key[depth], SET_LEAF(l));
+    l = make_leaf(artp, key, key_len, value);
+    add_child(artp, n, ref, key[depth], SET_LEAF(l));
     return NULL;
 }
 
@@ -1379,17 +1379,17 @@ RECURSE_SEARCH:;
  * the old value pointer is returned.
  */
 static void *
-art_insert(ARTREE *shmt, const uint8 *key, int key_len, void *value)
+art_insert(ARTREE *artp, const uint8 *key, int key_len, void *value)
 {
     int old_val = 0;
-    art_tree *t = shmt->tree;
-    void *old = recursive_insert(shmt, t->root, &t->root, key, key_len, value, 0,
+    art_tree *t = artp->tree;
+    void *old = recursive_insert(artp, t->root, &t->root, key, key_len, value, 0,
                                  &old_val);
     return old;
 }
 
 static void
-remove_child256(ARTREE *shmt, art_node256 *n, art_node **ref, uint8 c)
+remove_child256(ARTREE *artp, art_node256 *n, art_node **ref, uint8 c)
 {
     n->children[c] = NULL;
     n->n.num_children--;
@@ -1398,7 +1398,7 @@ remove_child256(ARTREE *shmt, art_node256 *n, art_node **ref, uint8 c)
     // trashing if we sit on the 48/49 boundary
     if (n->n.num_children == NODE256_MIN) {
         int i, pos = 0;
-        art_node48 *new_node = (art_node48 *) alloc_node(shmt, NODE48);
+        art_node48 *new_node = (art_node48 *) alloc_node(artp, NODE48);
         *ref = (art_node *) new_node;
         copy_header((art_node *) new_node, (art_node *) n);
 
@@ -1410,12 +1410,12 @@ remove_child256(ARTREE *shmt, art_node256 *n, art_node **ref, uint8 c)
             }
         }
         // pfree(n);
-        dealloc_node(shmt, (art_node *) n);
+        dealloc_node(artp, (art_node *) n);
     }
 }
 
 static void
-remove_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c)
+remove_child48(ARTREE *artp, art_node48 *n, art_node **ref, uint8 c)
 {
     int pos = n->keys[c];
     n->keys[c] = 0;
@@ -1424,7 +1424,7 @@ remove_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c)
 
     if (n->n.num_children == NODE48_MIN) {
         int i, child = 0;
-        art_node16 *new_node = (art_node16 *) alloc_node(shmt, NODE16);
+        art_node16 *new_node = (art_node16 *) alloc_node(artp, NODE16);
         *ref = (art_node *) new_node;
         copy_header((art_node *) new_node, (art_node *) n);
 
@@ -1437,12 +1437,12 @@ remove_child48(ARTREE *shmt, art_node48 *n, art_node **ref, uint8 c)
             }
         }
         // pfree(n);
-        dealloc_node(shmt, (art_node *) n);
+        dealloc_node(artp, (art_node *) n);
     }
 }
 
 static void
-remove_child16(ARTREE *shmt, art_node16 *n, art_node **ref, art_node **l)
+remove_child16(ARTREE *artp, art_node16 *n, art_node **ref, art_node **l)
 {
     int pos = l - n->children;
     memmove(n->keys + pos, n->keys + pos + 1, n->n.num_children - 1 - pos);
@@ -1451,18 +1451,18 @@ remove_child16(ARTREE *shmt, art_node16 *n, art_node **ref, art_node **l)
     n->n.num_children--;
 
     if (n->n.num_children == NODE16_MIN) {
-        art_node4 *new_node = (art_node4 *) alloc_node(shmt, NODE4);
+        art_node4 *new_node = (art_node4 *) alloc_node(artp, NODE4);
         *ref = (art_node *) new_node;
         copy_header((art_node *) new_node, (art_node *) n);
         memcpy(new_node->keys, n->keys, 4);
         memcpy(new_node->children, n->children, 4 * sizeof(void *));
         // pfree(n);
-        dealloc_node(shmt, (art_node *) n);
+        dealloc_node(artp, (art_node *) n);
     }
 }
 
 static void
-remove_child4(ARTREE *shmt, art_node4 *n, art_node **ref, art_node **l)
+remove_child4(ARTREE *artp, art_node4 *n, art_node **ref, art_node **l)
 {
     int pos = l - n->children;
     memmove(n->keys + pos, n->keys + pos + 1, n->n.num_children - 1 - pos);
@@ -1493,29 +1493,29 @@ remove_child4(ARTREE *shmt, art_node4 *n, art_node **ref, art_node **l)
         }
         *ref = child;
         // pfree(n);
-        dealloc_node(shmt, (art_node *) n);
+        dealloc_node(artp, (art_node *) n);
     }
 }
 
 static void
-remove_child(ARTREE *shmt, art_node *n, art_node **ref, uint8 c, art_node **l)
+remove_child(ARTREE *artp, art_node *n, art_node **ref, uint8 c, art_node **l)
 {
     switch (n->type) {
     case NODE4:
-        return remove_child4(shmt, (art_node4 *) n, ref, l);
+        return remove_child4(artp, (art_node4 *) n, ref, l);
     case NODE16:
-        return remove_child16(shmt, (art_node16 *) n, ref, l);
+        return remove_child16(artp, (art_node16 *) n, ref, l);
     case NODE48:
-        return remove_child48(shmt, (art_node48 *) n, ref, c);
+        return remove_child48(artp, (art_node48 *) n, ref, c);
     case NODE256:
-        return remove_child256(shmt, (art_node256 *) n, ref, c);
+        return remove_child256(artp, (art_node256 *) n, ref, c);
     default:
         elog(ERROR, "remove_child: unknown art_node type");
     }
 }
 
 static art_leaf *
-recursive_delete(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
+recursive_delete(ARTREE *artp, art_node *n, art_node **ref, const uint8 *key,
                  int key_len, int depth)
 {
     art_node **child;
@@ -1551,12 +1551,12 @@ recursive_delete(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
     if (IS_LEAF(*child)) {
         art_leaf *l = LEAF_RAW(*child);
         if (!leaf_matches(l, key, key_len, depth)) {
-            remove_child(shmt, n, ref, key[depth], child);
+            remove_child(artp, n, ref, key[depth], child);
             return l;
         }
         return NULL;
     } else {
-        return recursive_delete(shmt, *child, child, key, key_len, depth + 1);
+        return recursive_delete(artp, *child, child, key, key_len, depth + 1);
     }
 }
 
@@ -1569,14 +1569,14 @@ recursive_delete(ARTREE *shmt, art_node *n, art_node **ref, const uint8 *key,
  * the value pointer is returned.
  */
 static void *
-art_delete(ARTREE *shmt, const uint8 *key, int key_len)
+art_delete(ARTREE *artp, const uint8 *key, int key_len)
 {
-    art_tree *t = shmt->tree;
-    art_leaf *l = recursive_delete(shmt, t->root, &t->root, key, key_len, 0);
+    art_tree *t = artp->tree;
+    art_leaf *l = recursive_delete(artp, t->root, &t->root, key, key_len, 0);
     if (l) {
         void *old = l->value;
         // pfree(l);
-        dealloc_leaf(shmt, l);
+        dealloc_leaf(artp, l);
         return old;
     }
     return NULL;
