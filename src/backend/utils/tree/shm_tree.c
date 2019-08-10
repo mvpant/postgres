@@ -241,10 +241,10 @@ static MemoryContext CurrentTreeCxt = NULL;
 /*
  * bunch of random numbers
  */
-#define NODE4_NELEM		(NBuffers >> 2)
-#define NODE16_NELEM	(NBuffers >> 3)
-#define NODE48_NELEM	(NBuffers >> 4)
-#define NODE256_NELEM	(NBuffers >> 5)
+#define NODE4_NELEM		(NBuffers >> 1)
+#define NODE16_NELEM	(NBuffers >> 2)
+#define NODE48_NELEM	(NBuffers >> 3)
+#define NODE256_NELEM	(NBuffers >> 4)
 #define NODELEAF_NELEM	(NBuffers << 1)
 #define NODESUBTREE_NELEM 10000
 
@@ -708,6 +708,10 @@ alloc_node(ARTREE *artp, uint8 type)
     SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
 
     tmpElement = memhdr->freeList[freelist_idx].freeList;
+
+	if (!tmpElement)
+		elog(WARNING, "alloc_node: list number %d is exhausted", type);
+
     memhdr->freeList[freelist_idx].freeList = tmpElement->link;
     memhdr->freeList[freelist_idx].nentries--;
 
