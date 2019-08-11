@@ -220,8 +220,8 @@ Datum
 pg_stat_buftree(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
-	Datum		values[12];
-	bool		nulls[12];
+	Datum		values[18];
+	bool		nulls[18];
 	long *vals;
 
 	/* Initialise values and NULL flags arrays */
@@ -229,7 +229,7 @@ pg_stat_buftree(PG_FUNCTION_ARGS)
 	MemSet(nulls, 0, sizeof(nulls));
 
 	/* Initialise attributes information in the tuple descriptor */
-	tupdesc = CreateTemplateTupleDesc(12, false);
+	tupdesc = CreateTemplateTupleDesc(18, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "leafs",
 					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "node4",
@@ -252,7 +252,19 @@ pg_stat_buftree(PG_FUNCTION_ARGS)
 					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 11, "node256-total",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 12, "subtress-total",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 12, "subtrees-total",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 13, "leafs-mem",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 14, "node4-mem",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 15, "node16-mem",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 16, "node48-mem",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 17, "node256-mem",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 18, "subtress-mem",
 					   INT4OID, -1, 0);
 
 	BlessTupleDesc(tupdesc);
@@ -272,6 +284,12 @@ pg_stat_buftree(PG_FUNCTION_ARGS)
 	values[9] = Int32GetDatum(vals[9]);
 	values[10] = Int32GetDatum(vals[10]);
 	values[11] = Int32GetDatum(vals[11]);
+	values[12] = Int32GetDatum(vals[12]);
+	values[13] = Int32GetDatum(vals[13]);
+	values[14] = Int32GetDatum(vals[14]);
+	values[15] = Int32GetDatum(vals[15]);
+	values[16] = Int32GetDatum(vals[16]);
+	values[17] = Int32GetDatum(vals[17]);
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(

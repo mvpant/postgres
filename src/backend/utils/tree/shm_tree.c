@@ -16,7 +16,7 @@
 
 #define IGNORE_UNUSED(var) (void) (var)
 
-static long stats[12];
+static long stats[18];
 
 /*
  * Constants
@@ -241,13 +241,16 @@ static MemoryContext CurrentTreeCxt = NULL;
 /*
  * bunch of random numbers
  */
+#define NODESUBTREE_NELEM 10000
 #define NODE4_NELEM		(NBuffers >> 1)
 #define NODE16_NELEM	(NBuffers >> 2)
-#define NODE48_NELEM	(NBuffers >> 3)
-#define NODE256_NELEM	(NBuffers >> 4)
-#define NODELEAF_NELEM	(NBuffers << 1)
-#define NODESUBTREE_NELEM 10000
-
+#define NODE48_NELEM	(NBuffers >> 5)
+#define NODE256_NELEM	(NBuffers >> 6)
+/*
+ * quantity of leafs should depends on NBuffers and subtree's pool size...
+ * if we won't recycle empty subtrees, then, eventually, pool will be exhausted.
+ */
+#define NODELEAF_NELEM	(NBuffers + (NBuffers >> 5) + NODESUBTREE_NELEM)
 
 static const char SUBTREE_NAME[] = "subtree";
 #define TO_STR(x) #x
@@ -411,6 +414,10 @@ element_alloc(ARTREE *artp, int nelem, int ntype)
         elementSize += MAXALIGN(sizeof(art_node256));
         break;
     case NODELEAF:
+		/*
+		 * FIXME: currently subtrees use the same leaf nodes as main tree
+		 * (16b), but stores only BlockNumber(4b) in it...
+		 */
         elementSize += MAXALIGN(sizeof(art_leaf)) + artp->hdr.keysize;
         break;
     default:
@@ -656,6 +663,7 @@ artree_nodes_proportion(ARTREE *artp)
 long *
 artree_nodes_used(ARTREE *artp, FreeListARTree *artlist)
 {
+	Size elementSize;
 	ARTMEMHDR *memhdr = artp->hdr.tctl;
 	/* do not bother with lock acquiring */
 	stats[0] = NODELEAF_NELEM - memhdr->freeList[4].nentries;
@@ -670,6 +678,23 @@ artree_nodes_used(ARTREE *artp, FreeListARTree *artlist)
 	stats[9] = NODE48_NELEM;
 	stats[10] = NODE256_NELEM;
 	stats[11] = NODESUBTREE_NELEM;
+
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_leaf)) + memhdr->keysize;
+	stats[12] = mul_size(NODELEAF_NELEM, elementSize);
+
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node4));
+	stats[13] = mul_size(NODE4_NELEM, elementSize);
+
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node16));
+	stats[14] = mul_size(NODE16_NELEM, elementSize);
+
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node48));
+	stats[15] = mul_size(NODE48_NELEM, elementSize);
+
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node256));
+	stats[16] = mul_size(NODE256_NELEM, elementSize);
+
+	stats[17] = artree_subtreelist_size();
 
 	return stats;
 }

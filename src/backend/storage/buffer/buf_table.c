@@ -79,7 +79,11 @@ void BufTryUnLockTree(ARTREE *artp)
 Size
 BufTableShmemSize(int size)
 {
+#ifdef USE_HASH
     Size hashsize = hash_estimate_size(size, sizeof(BufferLookupEnt));
+#else
+	Size hashsize = 0;
+#endif
 
 	return hashsize;
 }
@@ -90,9 +94,13 @@ BufTableShmemSize(int size)
 Size
 BufTreeShmemSize()
 {
-	Size tree = artree_estimate_size(sizeof(BufferTag) - sizeof(BlockNumber));
+#ifdef USE_ART
+	Size treesize = artree_estimate_size(sizeof(BufferTag) - sizeof(BlockNumber));
+#else
+	Size treesize = 0;
+#endif
 
-	return tree;
+	return treesize;
 }
 
 /*
@@ -108,6 +116,7 @@ InitBufTable(int size)
 
 	/* assume no locking is needed yet */
 
+#ifdef USE_HASH
 	/* BufferTag maps to Buffer */
 	info.keysize = sizeof(BufferTag);
 	info.entrysize = sizeof(BufferLookupEnt);
@@ -117,7 +126,8 @@ InitBufTable(int size)
 								  size, size,
 								  &info,
 								  HASH_ELEM | HASH_BLOBS | HASH_PARTITION);
-
+#endif
+#ifdef USE_ART
 	tinfo.keysize = sizeof(BufferTag) - sizeof(BlockNumber);
 	/* in case of buffer tree we can save id inside leaf pointer */
 	tinfo.entrysize = 0; //sizeof(BufferLookupEnt);
@@ -130,6 +140,7 @@ InitBufTable(int size)
 										  &found);
 
 	artree_build_subtreelist(SharedBlockSubtrees, SharedBufTree);
+#endif
 }
 
 /*
@@ -354,12 +365,11 @@ BufInstallSubtree(SMgrRelation smgr, BufferTag *tagPtr)
 		subtree = artree_alloc_subtree(SharedBlockSubtrees);
 		shmresult = (uintptr_t) artree_insert(
 			SharedBufTree, (const uint8 *) tagPtr, (void *) subtree);
-		// check no collision appeared, if it is => dealloc?
 		if (shmresult != 0)
 		{
 			artree_dealloc_subtree(SharedBlockSubtrees, subtree);
 			subtree = (ARTREE *) shmresult;
-			elog(WARNING, "install:subtree collision.");
+			elog(DEBUG1, "BufInstallSubtree: collision occured.");
 		}
 		smgr->cached_forks[tagPtr->forkNum] = subtree;
 	}
