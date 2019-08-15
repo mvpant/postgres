@@ -1,7 +1,6 @@
 #include "postgres.h"
 
 #include "lib/artree.h"
-#include "utils/shm_tree.h"
 
 #include "fmgr.h"
 #include "nodes/bitmapset.h"
@@ -21,7 +20,6 @@
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(test_artree);
-PG_FUNCTION_INFO_V1(pg_stat_buftree);
 
 static void test_art_insert(char *filepath);
 static void test_art_insert_search_delete(char *filepath);
@@ -214,84 +212,4 @@ test_art_insert_search_delete(char *filepath)
     elog(LOG, "test_art_insert_search_delete end \n\n");
 
     elog(LOG, "art_size " UINT64_FORMAT, art_num_entries(art));
-}
-
-Datum
-pg_stat_buftree(PG_FUNCTION_ARGS)
-{
-	TupleDesc	tupdesc;
-	Datum		values[18];
-	bool		nulls[18];
-	long *vals;
-
-	/* Initialise values and NULL flags arrays */
-	MemSet(values, 0, sizeof(values));
-	MemSet(nulls, 0, sizeof(nulls));
-
-	/* Initialise attributes information in the tuple descriptor */
-	tupdesc = CreateTemplateTupleDesc(18, false);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "leafs",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "node4",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "node16",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "node48",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "node256",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 6, "subtrees",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 7, "leafs-total",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 8, "node4-total",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 9, "node16-total",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 10, "node48-total",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 11, "node256-total",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 12, "subtrees-total",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 13, "leafs-mem",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 14, "node4-mem",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 15, "node16-mem",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 16, "node48-mem",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 17, "node256-mem",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 18, "subtress-mem",
-					   INT4OID, -1, 0);
-
-	BlessTupleDesc(tupdesc);
-
-	vals = BufTreeStats();
-
-	/* Fill values and NULLs */
-	values[0] = Int32GetDatum(vals[0]);
-	values[1] = Int32GetDatum(vals[1]);
-	values[2] = Int32GetDatum(vals[2]);
-	values[3] = Int32GetDatum(vals[3]);
-	values[4] = Int32GetDatum(vals[4]);
-	values[5] = Int32GetDatum(vals[5]);
-	values[6] = Int32GetDatum(vals[6]);
-	values[7] = Int32GetDatum(vals[7]);
-	values[8] = Int32GetDatum(vals[8]);
-	values[9] = Int32GetDatum(vals[9]);
-	values[10] = Int32GetDatum(vals[10]);
-	values[11] = Int32GetDatum(vals[11]);
-	values[12] = Int32GetDatum(vals[12]);
-	values[13] = Int32GetDatum(vals[13]);
-	values[14] = Int32GetDatum(vals[14]);
-	values[15] = Int32GetDatum(vals[15]);
-	values[16] = Int32GetDatum(vals[16]);
-	values[17] = Int32GetDatum(vals[17]);
-
-	/* Returns the record as Datum */
-	PG_RETURN_DATUM(HeapTupleGetDatum(
-									  heap_form_tuple(tupdesc, values, nulls)));
 }
