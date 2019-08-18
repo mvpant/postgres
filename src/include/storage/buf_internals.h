@@ -321,7 +321,7 @@ extern bool have_free_buffer(void);
 
 /* buf_table.c */
 extern Size BufTableShmemSize(int size);
-extern Size BufTreeShmemSize(void);
+extern Size BufTreeShmemSize(int size);
 extern void InitBufTable(int size);
 extern uint32 BufTableHashCode(BufferTag *tagPtr);
 extern int	BufTableLookup(ARTREE *artp, BufferTag *tagPtr, uint32 hashcode);

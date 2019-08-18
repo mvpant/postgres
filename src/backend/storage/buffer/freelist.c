@@ -458,7 +458,7 @@ StrategyShmemSize(void)
 	/* size of lookup hash table ... see comment in StrategyInitialize */
 	size = add_size(size, BufTableShmemSize(NBuffers + NUM_BUFFER_PARTITIONS));
 
-	size = add_size(size, BufTreeShmemSize());
+	size = add_size(size, BufTreeShmemSize(NBuffers));
 
 	/* size of the shared replacement strategy control block */
 	size = add_size(size, MAXALIGN(sizeof(BufferStrategyControl)));

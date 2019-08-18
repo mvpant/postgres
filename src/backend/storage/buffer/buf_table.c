@@ -23,6 +23,7 @@
 
 #include "storage/bufmgr.h"
 #include "storage/buf_internals.h"
+#include "port/pg_bswap.h"
 
 
 /* entry for buffer lookup hashtable */
@@ -38,6 +39,12 @@ static ARTREE *SharedBufTree;
 
 static FreeListARTree *SharedBlockSubtrees;
 
+/*
+ * quantity of leafs should depends on NBuffers and subtree's pool size...
+ * if we won't recycle empty subtrees, then, eventually, pool will be exhausted.
+ */
+#define NODESUBTREE_NELEM 10000
+
 #define PAYLOAD_MOD 0xF0000000
 
 // #define VALIDATE_ART 1
@@ -45,6 +52,12 @@ static FreeListARTree *SharedBlockSubtrees;
 #define USE_ART 1
 
 // #define USE_HASH 1
+
+#ifdef WORDS_BIGENDIAN
+#define SETUP_BLOCK_KEY(tagPtr) (tagPtr->blockNum)
+#else
+#define SETUP_BLOCK_KEY(tagPtr) (pg_bswap32(tagPtr->blockNum))
+#endif
 
 ARTREE *
 BufGetMainTree()
@@ -92,10 +105,14 @@ BufTableShmemSize(int size)
  * Estimate space needed for mapping tree
  */
 Size
-BufTreeShmemSize()
+BufTreeShmemSize(int size)
 {
 #ifdef USE_ART
-	Size treesize = artree_estimate_size(sizeof(BufferTag) - sizeof(BlockNumber));
+	Size treesize = artree_estimate_size(NODESUBTREE_NELEM,
+										 sizeof(BufferTag) - sizeof(BlockNumber),
+										 size,
+										 sizeof(BlockNumber),
+										 0);
 #else
 	Size treesize = 0;
 #endif
@@ -130,16 +147,19 @@ InitBufTable(int size)
 #ifdef USE_ART
 	tinfo.keysize = sizeof(BufferTag) - sizeof(BlockNumber);
 	/* in case of buffer tree we can save id inside leaf pointer */
-	tinfo.entrysize = 0; //sizeof(BufferLookupEnt);
+	tinfo.entrysize = 0;
 	SharedBufTree = ShmemInitTree("Shared Buffer Lookup Tree",
+								  NODESUBTREE_NELEM,
+								  NBuffers,
 								  &tinfo,
 								  ARTREE_ELEM);
 
 	SharedBlockSubtrees = ShmemInitStruct("Shared Buffer Block Trees",
-										  artree_subtreelist_size(),
+										  artree_subtreelist_size(NODESUBTREE_NELEM),
 										  &found);
 
-	artree_build_subtreelist(SharedBlockSubtrees, SharedBufTree);
+	artree_build_subtreelist(SharedBlockSubtrees, SharedBufTree,
+							 NODESUBTREE_NELEM, NBuffers);
 #endif
 }
 
@@ -173,8 +193,9 @@ BufTableLookup(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 
 	if (subtree)
 	{
+		uint32 block_key = SETUP_BLOCK_KEY(tagPtr);
 		shmresult = (uintptr_t) artree_search(
-			subtree, (const uint8 *) &tagPtr->blockNum);
+			subtree, (const uint8 *) &block_key);
 	}
 #endif
 #ifdef USE_HASH
@@ -244,11 +265,12 @@ BufTableInsert(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode, int buf_id)
 #ifdef USE_ART
 	uintptr_t shmresult;
 	uint64_t payload = PAYLOAD_MOD | buf_id;
+	uint32 block_key = SETUP_BLOCK_KEY(tagPtr);
 
 	Assert(subtree);
 
 	shmresult = (uintptr_t) artree_insert(
-		subtree, (const uint8 *) &tagPtr->blockNum, (void *) payload);
+		subtree, (const uint8 *) &block_key, (void *) payload);
 #endif
 #ifdef USE_HASH
 	result = (BufferLookupEnt *)
@@ -313,9 +335,10 @@ BufTableDelete(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 
 #ifdef USE_ART
 	Assert(subtree);
+	uint32 block_key = SETUP_BLOCK_KEY(tagPtr);
 
 	shmresult = (uintptr_t) artree_delete(
-		subtree, (const uint8 *) &tagPtr->blockNum);
+		subtree, (const uint8 *) &block_key);
 #endif
 #ifdef USE_HASH
 	result = (BufferLookupEnt *)
@@ -350,7 +373,7 @@ BufTableDelete(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 long *
 BufTreeStats(void)
 {
-	return artree_nodes_used(SharedBufTree, SharedBlockSubtrees);
+	return artree_nodes_used(SharedBufTree, SharedBlockSubtrees, NODESUBTREE_NELEM);
 }
 
 ARTREE *
@@ -391,6 +414,7 @@ BufUnistallSubtree(BufferTag *tagPtr)
 	// todo: send message to backends to invalidate cache...
 	// or it is(probably) already done in CacheInvalidateSmgr(rnode);
 	// need to check that functionality, so we can move towards subtree recycling
+	// smgrdounlinkfork
 }
 
 ARTREE *

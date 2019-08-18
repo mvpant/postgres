@@ -30,7 +30,6 @@ static long stats[18];
 #define NODE256 4
 #define NODELEAF 5
 #define NODE_FREELIST_IDX(type) (type - 1)
-#define LEAF_FREELIST_IDX(type) NODE_FREELIST_IDX(type)
 
 /*
  * Thresholds that trigger nodes replacement.
@@ -145,10 +144,18 @@ typedef struct FreeListNode
 	NODEELEMENT *freeList;
 } FreeListNode;
 
+typedef struct FreeListMeta
+{
+	long		init_nelem;  /* number of entries at initialization */
+	long		max_nelem;   /* total number of allocated entries */
+	int			nelem_alloc; /* number of entries to allocate at once */
+} FreeListMeta;
+
 typedef struct FreeListARTree
 {
 	slock_t		mutex;
 	long		nentries;
+	long		init_nelem;
 	NODEELEMENT *freeList;
 } FreeListARTree;
 
@@ -160,17 +167,24 @@ typedef struct FreeListARTree
  */
 struct ARTMEMHDR
 {
-	FreeListNode freeList[5];
+	FreeListNode freeList[4];
+	FreeListMeta freeListMeta[4];
+};
+
+typedef struct LEAFMEMHDR
+{
+	FreeListNode freeList;
+	FreeListMeta freeListMeta;
 
 	Size keysize;	 /* key length in bytes */
 	Size entrysize;  /* total user element size in bytes */
-	int nelem_alloc; /* number of entries to allocate at once */
-};
+} LEAFMEMHDR;
 
 typedef struct TREEHDR
 {
-	ARTMEMHDR *tctl;	 /* => shared control information */
-	art_tree *tree;		 /* allocated right after tctl header struct */
+	ARTMEMHDR *nctl;	 /* => shared nodes freeList */
+	LEAFMEMHDR *lctl;	 /* => shared leafs freeList */
+	art_tree *tree;		 /* allocated right after tctl & lctl header struct */
 	Size keysize;		 /* key length in bytes */
 	Size entrysize;		 /* total user element size in bytes */
 	char *treename;
@@ -193,7 +207,9 @@ static art_node *alloc_node(ARTREE *artp, uint8 type);
 static void dealloc_node(ARTREE *artp, art_node *n);
 static art_leaf *alloc_leaf(ARTREE *artp);
 static void dealloc_leaf(ARTREE *artp, art_leaf *n);
-static bool element_alloc(ARTREE *artp, int nelem, int ntype);
+static bool nodes_alloc(ARTREE *artp, int nelem, uint8 ntype);
+static bool leafs_alloc(ARTREE *artp, int nelem);
+static int choose_nelem_alloc(ARTREE *artp, uint8 ntype);
 
 /* utility */
 static int check_prefix(const art_node *n, const uint8 *key, int key_len, int depth);
@@ -242,15 +258,10 @@ static MemoryContext CurrentTreeCxt = NULL;
  * bunch of random numbers
  */
 #define NODESUBTREE_NELEM 10000
-#define NODE4_NELEM		(NBuffers >> 1)
-#define NODE16_NELEM	(NBuffers >> 2)
-#define NODE48_NELEM	(NBuffers >> 5)
-#define NODE256_NELEM	(NBuffers >> 6)
-/*
- * quantity of leafs should depends on NBuffers and subtree's pool size...
- * if we won't recycle empty subtrees, then, eventually, pool will be exhausted.
- */
-#define NODELEAF_NELEM	(NBuffers + (NBuffers >> 5) + NODESUBTREE_NELEM)
+#define NODE4_NELEM(x)		((x) >> 1)
+#define NODE16_NELEM(x)		((x) >> 2)
+#define NODE48_NELEM(x)		((x) >> 5)
+#define NODE256_NELEM(x)	((x) >> 6)
 
 static const char SUBTREE_NAME[] = "subtree";
 #define TO_STR(x) #x
@@ -268,10 +279,11 @@ TreeAlloc(Size size)
 }
 
 ARTREE *
-artree_create(const char *treename, ARTREECTL *info, int flags)
+artree_create(const char *treename, long num_subtrees, long nelem, ARTREECTL *info, int flags)
 {
     ARTREE *artp;
-    ARTMEMHDR *memhdr;
+	ARTMEMHDR *node_memhdr;
+	LEAFMEMHDR *leaf_memhdr;
     art_tree *art;
 
 	if (flags & ARTREE_SHARED_MEM)
@@ -286,8 +298,9 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
 			CurrentTreeCxt = info->hcxt;
 		else
 			CurrentTreeCxt = TopMemoryContext;
-        CurrentTreeCxt =
-            AllocSetContextCreate(CurrentTreeCxt, "shmtree", ALLOCSET_DEFAULT_SIZES);
+		CurrentTreeCxt = AllocSetContextCreate(CurrentTreeCxt,
+											   "artree",
+											   ALLOCSET_DEFAULT_SIZES);
 	}
 
 	/* Initialize the tree structure, plus a copy of the tree name */
@@ -309,39 +322,43 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
 
 	if (flags & ARTREE_SHARED_MEM)
 	{
-		artp->hdr.tctl = info->tctl;
-		artp->hdr.tree = (art_tree *) (((char *) info->tctl) + sizeof(ARTMEMHDR));
+		artp->hdr.nctl = info->tctl;
+		artp->hdr.lctl = (LEAFMEMHDR *) (((char *) info->tctl) + sizeof(ARTMEMHDR));
+		artp->hdr.tree = (art_tree *) (((char *) info->tctl) +
+									   sizeof(ARTMEMHDR) + sizeof(LEAFMEMHDR));
 		artp->tcxt = NULL;
 		artp->isshared = true;
 
 		if (flags & ARTREE_ATTACH)
 		{
-			memhdr = artp->hdr.tctl;
-			artp->hdr.keysize = memhdr->keysize;
+			leaf_memhdr = artp->hdr.lctl;
+			artp->hdr.keysize = leaf_memhdr->keysize;
 
 			return artp;
 		}
 	}
 	else
 	{
-		artp->hdr.tctl = NULL;
+		artp->hdr.nctl = NULL;
+		artp->hdr.lctl = NULL;
 		artp->hdr.tree = NULL;
 		artp->tcxt = CurrentTreeCxt;
 		artp->isshared = false;
 	}
 
-	if (!artp->hdr.tctl)
+	if (!artp->hdr.nctl)
 	{
-		artp->hdr.tctl = (ARTMEMHDR *) artp->alloc(sizeof(ARTMEMHDR));
-		if (!artp->hdr.tctl)
+		artp->hdr.nctl = (ARTMEMHDR *) artp->alloc(sizeof(ARTMEMHDR));
+		if (!artp->hdr.nctl)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of memory")));
 	}
 
-	MemSet(artp->hdr.tctl, 0, sizeof(ARTMEMHDR));
+	MemSet(artp->hdr.nctl, 0, sizeof(ARTMEMHDR));
 
-	memhdr = artp->hdr.tctl;
+	node_memhdr = artp->hdr.nctl;
+	leaf_memhdr = artp->hdr.lctl;
     art = artp->hdr.tree;
     art->root = NULL;
 	art->leaves = 0;
@@ -358,38 +375,100 @@ artree_create(const char *treename, ARTREECTL *info, int flags)
 	 */
 	if (flags & ARTREE_ELEM)
 	{
-		// Assert(info->entrysize >= info->keysize);
-		memhdr->keysize = info->keysize;
-		memhdr->entrysize = info->entrysize;
+		leaf_memhdr->keysize = info->keysize;
+		leaf_memhdr->entrysize = info->entrysize;
 	}
 
 	/* make local copies of heavily-used constant fields */
-	artp->hdr.keysize = memhdr->keysize;
+	artp->hdr.keysize = leaf_memhdr->keysize;
+	artp->hdr.entrysize = leaf_memhdr->entrysize;
 
 	if (flags & ARTREE_SHARED_MEM)
 	{
-        if (!element_alloc(artp, NODE4_NELEM, NODE4))
-            ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
-        if (!element_alloc(artp, NODE16_NELEM, NODE16))
-            ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
-        if (!element_alloc(artp, NODE48_NELEM, NODE48))
-            ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
-        if (!element_alloc(artp, NODE256_NELEM, NODE256))
-            ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
-        if (!element_alloc(artp, NODELEAF_NELEM, NODELEAF))
-            ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory")));
+		int		i;
+		int		nleafs;
+		uint8	node_types[] = { NODE4, NODE16, NODE48, NODE256 };
+		int		nelem_alloc[] = { NODE4_NELEM(nelem), NODE16_NELEM(nelem),
+								  NODE48_NELEM(nelem), NODE256_NELEM(nelem) };
+
+		/* first nodes of different type */
+		for (i = 0; i < sizeof(nelem_alloc) / sizeof(nelem_alloc[0]); i++)
+		{
+			node_memhdr->freeList[i].nentries = 0;
+			node_memhdr->freeListMeta[i].init_nelem = nelem_alloc[i];
+			node_memhdr->freeListMeta[i].max_nelem = 0;
+			node_memhdr->freeListMeta[i].nelem_alloc = choose_nelem_alloc(artp, node_types[i]);
+
+			SpinLockInit(&node_memhdr->freeList[i].mutex);
+
+			if (!nodes_alloc(artp, nelem_alloc[i], node_types[i]))
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("out of memory")));
+		}
+
+		if (flags & ARTREE_COMPOUND)
+		{
+			nleafs = num_subtrees;
+		}
+		else
+		{
+			nleafs = nelem;
+		}
+
+		leaf_memhdr->freeListMeta.init_nelem = nleafs;
+		leaf_memhdr->freeListMeta.max_nelem = 0;
+		leaf_memhdr->freeListMeta.nelem_alloc = choose_nelem_alloc(artp, NODELEAF);
+
+		SpinLockInit(&leaf_memhdr->freeList.mutex);
+
+		/* and now its time of leafs */
+		if (!leafs_alloc(artp, nleafs))
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
 	}
 
     return artp;
 }
 
+
+static int
+choose_nelem_alloc(ARTREE *artp, uint8 ntype)
+{
+	int			nelem_alloc;
+
+	/* FIXME */
+	switch (ntype) {
+	case NODE4:
+		nelem_alloc = 128;
+		break;
+	case NODE16:
+		nelem_alloc = 64;
+		break;
+	case NODE48:
+		nelem_alloc = 32;
+		break;
+	case NODE256:
+		nelem_alloc = 16;
+		break;
+	case NODELEAF:
+		nelem_alloc = 32;
+		break;
+	default:
+		elog(ERROR, "choose_nelem_alloc: unknown art_node type");
+	}
+
+	return nelem_alloc;
+}
+
 /*
- * allocate some new elements and link them into the indicated free list
+ * allocate some new nodes and link them into the indicated free list
  */
 static bool
-element_alloc(ARTREE *artp, int nelem, int ntype)
+nodes_alloc(ARTREE *artp, int nelem, uint8 ntype)
 {
-    ARTMEMHDR *memhdr = artp->hdr.tctl;
+    ARTMEMHDR *memhdr = artp->hdr.nctl;
     Size elementSize;
     NODEELEMENT *firstElement;
     NODEELEMENT *tmpElement;
@@ -413,15 +492,8 @@ element_alloc(ARTREE *artp, int nelem, int ntype)
     case NODE256:
         elementSize += MAXALIGN(sizeof(art_node256));
         break;
-    case NODELEAF:
-		/*
-		 * FIXME: currently subtrees use the same leaf nodes as main tree
-		 * (16b), but stores only BlockNumber(4b) in it...
-		 */
-        elementSize += MAXALIGN(sizeof(art_leaf)) + artp->hdr.keysize;
-        break;
     default:
-		elog(ERROR, "element_alloc: unknown art_node type");
+		elog(ERROR, "nodes_alloc: unknown art_node type");
     }
 
     CurrentTreeCxt = artp->tcxt;
@@ -439,15 +511,60 @@ element_alloc(ARTREE *artp, int nelem, int ntype)
         tmpElement = (NODEELEMENT *) (((char *) tmpElement) + elementSize);
     }
     
-    SpinLockInit(&memhdr->freeList[freelist_idx].mutex);
-    // SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
+	SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
 
     /* freelist could be nonempty if two backends did this concurrently */
     firstElement->link = memhdr->freeList[freelist_idx].freeList;
     memhdr->freeList[freelist_idx].freeList = prevElement;
-    memhdr->freeList[freelist_idx].nentries = nelem;
+    memhdr->freeList[freelist_idx].nentries += nelem;
+	memhdr->freeListMeta[freelist_idx].max_nelem += nelem;
 
-    // SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
+	SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
+
+	return true;
+}
+
+/*
+ * allocate some new leafs and link them into the indicated free list
+ */
+static bool
+leafs_alloc(ARTREE *artp, int nelem)
+{
+	LEAFMEMHDR *memhdr = artp->hdr.lctl;
+	Size elementSize;
+	NODEELEMENT *firstElement;
+	NODEELEMENT *tmpElement;
+	NODEELEMENT *prevElement;
+	int i;
+
+	/* Each element has a NODEELEMENT header plus user data. */
+	elementSize = MAXALIGN(sizeof(NODEELEMENT));
+	elementSize += MAXALIGN(sizeof(art_leaf)) + artp->hdr.keysize + artp->hdr.entrysize;
+
+	CurrentTreeCxt = artp->tcxt;
+	firstElement = (NODEELEMENT *) artp->alloc(nelem * elementSize);
+
+	if (!firstElement)
+		return false;
+
+	/* prepare to link all the new nodes into the freelist */
+	prevElement = NULL;
+	tmpElement = firstElement;
+	for (i = 0; i < nelem; i++) {
+		tmpElement->link = prevElement;
+		prevElement = tmpElement;
+		tmpElement = (NODEELEMENT *) (((char *) tmpElement) + elementSize);
+	}
+	
+	SpinLockAcquire(&memhdr->freeList.mutex);
+
+	/* freelist could be nonempty if two backends did this concurrently */
+	firstElement->link = memhdr->freeList.freeList;
+	memhdr->freeList.freeList = prevElement;
+	memhdr->freeList.nentries = nelem;
+	memhdr->freeListMeta.max_nelem += nelem;
+
+	SpinLockRelease(&memhdr->freeList.mutex);
 
 	return true;
 }
@@ -455,16 +572,16 @@ element_alloc(ARTREE *artp, int nelem, int ntype)
 Size
 artree_get_shared_size(ARTREECTL *info, int flags)
 {
-	return sizeof(ARTMEMHDR) + sizeof(art_tree);
+	return sizeof(ARTMEMHDR) + sizeof(LEAFMEMHDR) + sizeof(art_tree);
 }
 
 Size
-artree_subtreelist_size()
+artree_subtreelist_size(long num_subtrees)
 {
 	Size size, elementSize;
-	size = MAXALIGN(sizeof(FreeListARTree));
+	size = MAXALIGN(sizeof(FreeListARTree)) + sizeof(LEAFMEMHDR);
 	elementSize = SUBTREE_SIZE;
-	size = add_size(size, mul_size(elementSize, NODESUBTREE_NELEM));
+	size = add_size(size, mul_size(elementSize, num_subtrees));
 	return size;
 }
 
@@ -475,32 +592,48 @@ artree_getlock(ARTREE *artp)
 }
 
 void
-artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree)
+artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree,
+						 long num_subtrees, int num_buffers)
 {
 	NODEELEMENT *firstElement;
 	NODEELEMENT *tmpElement;
 	NODEELEMENT *prevElement;
 	int i;
-	int nelem = NODESUBTREE_NELEM;
 	Size elementSize;
 
-	TREEHDR *hdr;
-	ARTMEMHDR *memhdr = buftree->hdr.tctl;
-	char *ptr;
+	/* subtrees share buftree's freeLists of nodes */
+	ARTMEMHDR *node_memhdr = buftree->hdr.nctl;
+	LEAFMEMHDR *leaf_memhdr = (LEAFMEMHDR *) (((char *) artlist) +
+											  MAXALIGN(sizeof(FreeListARTree)));
 	int trancheid = LWLockNewTrancheId();
 	LWLockRegisterTranche(trancheid, "blocktrees");
+
+	/*
+	 * FIXME: this dirty stuff is used to allocate proper number of leafs with
+	 * BlockNumber keysize.
+	 */
+	ARTREE tmp_art;
+	tmp_art.hdr.lctl = leaf_memhdr;
+	tmp_art.hdr.keysize = sizeof(BlockNumber);
+	tmp_art.hdr.entrysize = 0;
+	tmp_art.alloc = ShmemAllocNoError;
+	leafs_alloc(&tmp_art, num_buffers + 100);
 
 	CurrentTreeCxt = TopMemoryContext;
 
 	elementSize = SUBTREE_SIZE;
 
-	firstElement =
-		(NODEELEMENT *) (((char *) artlist) + MAXALIGN(sizeof(FreeListARTree)));
+	firstElement = (NODEELEMENT *) (((char *) artlist) +
+									MAXALIGN(sizeof(FreeListARTree)) +
+									sizeof(LEAFMEMHDR));
 
 	prevElement = NULL;
 	tmpElement = firstElement;
-	for (i = 0; i < nelem; i++)
+	for (i = 0; i < num_subtrees; i++)
 	{
+		TREEHDR *hdr;
+		char *ptr;
+
 		ptr = (char *) tmpElement;
 		MemSet(ptr, 0, elementSize);
 
@@ -508,7 +641,8 @@ artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree)
 		hdr = (TREEHDR *) ptr;
 
 		ptr += MAXALIGN(sizeof(TREEHDR));
-		hdr->tctl = memhdr;
+		hdr->nctl = node_memhdr;
+		hdr->lctl = leaf_memhdr;
 		hdr->tree = (art_tree *) ptr;
 		hdr->keysize = sizeof(BlockNumber);
 
@@ -529,7 +663,8 @@ artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree)
 
 	SpinLockInit(&artlist->mutex);
 	artlist->freeList = prevElement;
-	artlist->nentries = NODESUBTREE_NELEM;
+	artlist->nentries = num_subtrees;
+	artlist->init_nelem = num_subtrees;
 }
 
 ARTREE *
@@ -572,34 +707,44 @@ artree_dealloc_subtree(FreeListARTree *artlist, ARTREE *artp)
 	tmpElement->link = artlist->freeList;
 	artlist->freeList = tmpElement;
 	artlist->nentries++;
-	Assert(artlist->nentries <= NODESUBTREE_NELEM);
+	Assert(artlist->nentries <= artlist->init_nelem);
 	SpinLockRelease(&artlist->mutex);
 }
 
 Size
-artree_estimate_size(Size keysize)
+artree_estimate_size(long num_subtrees, Size subtree_keysize,
+					 long num_entries, Size keysize, Size entrysize)
 {
 	Size		size;
 	long elementSize;
 
-	size = MAXALIGN(sizeof(ARTMEMHDR));
+	/* should match artree_get_shared_size */
+	size = sizeof(ARTMEMHDR) + sizeof(LEAFMEMHDR) + sizeof(art_tree);
 
+	/* first nodes that shared between all trees */
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node4));
-	size = add_size(size, mul_size(NODE4_NELEM, elementSize));
+	size = add_size(size, mul_size(NODE4_NELEM(num_entries), elementSize));
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node16));
-	size = add_size(size, mul_size(NODE16_NELEM, elementSize));
+	size = add_size(size, mul_size(NODE16_NELEM(num_entries), elementSize));
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node48));
-	size = add_size(size, mul_size(NODE48_NELEM, elementSize));
+	size = add_size(size, mul_size(NODE48_NELEM(num_entries), elementSize));
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node256));
-	size = add_size(size, mul_size(NODE256_NELEM, elementSize));
+	size = add_size(size, mul_size(NODE256_NELEM(num_entries), elementSize));
 
-	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_leaf)) + keysize;
-	size = add_size(size, mul_size(NODELEAF_NELEM, elementSize));
+	/* then leafs in the main tree for subtrees */
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_leaf))
+		+ subtree_keysize;
+	size = add_size(size, mul_size(num_subtrees, elementSize));
 
-	size = add_size(size, artree_subtreelist_size());
+	/* then leafs inside subtrees for BlockNumber */
+	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_leaf))
+		+ keysize + entrysize;
+	size = add_size(size, mul_size(num_entries + 100, elementSize));
+
+	size = add_size(size, artree_subtreelist_size(num_subtrees));
 
 	return size;
 }
@@ -661,40 +806,46 @@ artree_nodes_proportion(ARTREE *artp)
 }
 
 long *
-artree_nodes_used(ARTREE *artp, FreeListARTree *artlist)
+artree_nodes_used(ARTREE *artp, FreeListARTree *artlist, long num_subtrees)
 {
 	Size elementSize;
-	ARTMEMHDR *memhdr = artp->hdr.tctl;
-	/* do not bother with lock acquiring */
-	stats[0] = NODELEAF_NELEM - memhdr->freeList[4].nentries;
-	stats[1] = NODE4_NELEM - memhdr->freeList[0].nentries;
-	stats[2] = NODE16_NELEM - memhdr->freeList[1].nentries;
-	stats[3] = NODE48_NELEM - memhdr->freeList[2].nentries;
-	stats[4] = NODE256_NELEM - memhdr->freeList[3].nentries;
-	stats[5] = NODESUBTREE_NELEM - artlist->nentries;
-	stats[6] = NODELEAF_NELEM;
-	stats[7] = NODE4_NELEM;
-	stats[8] = NODE16_NELEM;
-	stats[9] = NODE48_NELEM;
-	stats[10] = NODE256_NELEM;
-	stats[11] = NODESUBTREE_NELEM;
+	ARTMEMHDR *node_memhdr = artp->hdr.nctl;
+	LEAFMEMHDR *leaf_memhdr = artp->hdr.lctl;
+	long n4init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE4)].init_nelem,
+		 n16init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE16)].init_nelem,
+		 n48init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE48)].init_nelem,
+		 n256init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE256)].init_nelem;
 
-	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_leaf)) + memhdr->keysize;
-	stats[12] = mul_size(NODELEAF_NELEM, elementSize);
+	/* do not bother with lock acquiring */
+	stats[0] = 0;
+	stats[1] = n4init_elems - node_memhdr->freeList[0].nentries;
+	stats[2] = n16init_elems - node_memhdr->freeList[1].nentries;
+	stats[3] = n48init_elems - node_memhdr->freeList[2].nentries;
+	stats[4] = n256init_elems - node_memhdr->freeList[3].nentries;
+	stats[5] = num_subtrees - artlist->nentries;
+	stats[6] = 0;
+	stats[7] = n4init_elems;
+	stats[8] = n16init_elems;
+	stats[9] = n48init_elems;
+	stats[10] = n256init_elems;
+	stats[11] = num_subtrees;
+
+	elementSize = 0;
+	stats[12] = mul_size(0, elementSize);
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node4));
-	stats[13] = mul_size(NODE4_NELEM, elementSize);
+	stats[13] = mul_size(n4init_elems, elementSize);
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node16));
-	stats[14] = mul_size(NODE16_NELEM, elementSize);
+	stats[14] = mul_size(n16init_elems, elementSize);
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node48));
-	stats[15] = mul_size(NODE48_NELEM, elementSize);
+	stats[15] = mul_size(n48init_elems, elementSize);
 
 	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node256));
-	stats[16] = mul_size(NODE256_NELEM, elementSize);
+	stats[16] = mul_size(n256init_elems, elementSize);
 
-	stats[17] = artree_subtreelist_size();
+	stats[17] = artree_subtreelist_size(num_subtrees);
 
 	return stats;
 }
@@ -706,7 +857,7 @@ artree_nodes_used(ARTREE *artp, FreeListARTree *artlist)
 static art_node *
 alloc_node(ARTREE *artp, uint8 type)
 {
-    ARTMEMHDR *memhdr = artp->hdr.tctl;
+    ARTMEMHDR *memhdr = artp->hdr.nctl;
     NODEELEMENT *tmpElement;
     int freelist_idx;
     art_node *n;
@@ -753,7 +904,7 @@ alloc_node(ARTREE *artp, uint8 type)
 static void
 dealloc_node(ARTREE *artp, art_node *node)
 {
-    ARTMEMHDR *memhdr = artp->hdr.tctl;
+    ARTMEMHDR *memhdr = artp->hdr.nctl;
     NODEELEMENT *tmpElement;
     Size elementSize;
 	uint8 freelist_idx;
@@ -797,18 +948,17 @@ dealloc_node(ARTREE *artp, art_node *node)
 static art_leaf *
 alloc_leaf(ARTREE *artp)
 {
-    ARTMEMHDR *memhdr = artp->hdr.tctl;
+    LEAFMEMHDR *memhdr = artp->hdr.lctl;
     NODEELEMENT *tmpElement;
     art_leaf *n;
-	uint8 freelist_idx = LEAF_FREELIST_IDX(NODELEAF);
 
-    SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
+    SpinLockAcquire(&memhdr->freeList.mutex);
 
-    tmpElement = memhdr->freeList[freelist_idx].freeList;
-    memhdr->freeList[freelist_idx].freeList = tmpElement->link;
-    memhdr->freeList[freelist_idx].nentries--;
+    tmpElement = memhdr->freeList.freeList;
+    memhdr->freeList.freeList = tmpElement->link;
+    memhdr->freeList.nentries--;
 
-    SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
+    SpinLockRelease(&memhdr->freeList.mutex);
 
 	tmpElement->link = NULL;
 	artp->hdr.tree->leaves++;
@@ -820,23 +970,22 @@ alloc_leaf(ARTREE *artp)
 static void
 dealloc_leaf(ARTREE *artp, art_leaf *node)
 {
-    ARTMEMHDR *memhdr = artp->hdr.tctl;
+    LEAFMEMHDR *memhdr = artp->hdr.lctl;
     NODEELEMENT *tmpElement;
     Size elementSize = MAXALIGN(sizeof(art_leaf));
-	uint8 freelist_idx = LEAF_FREELIST_IDX(NODELEAF);
     tmpElement = NODEELEMENT_LINK(node);
 
 	Assert(tmpElement->link == NULL);
 
     MemSet(node, 0, elementSize);
 
-    SpinLockAcquire(&memhdr->freeList[freelist_idx].mutex);
+    SpinLockAcquire(&memhdr->freeList.mutex);
 
-    tmpElement->link = memhdr->freeList[freelist_idx].freeList;
-    memhdr->freeList[freelist_idx].freeList = tmpElement;
-    memhdr->freeList[freelist_idx].nentries++;
+    tmpElement->link = memhdr->freeList.freeList;
+    memhdr->freeList.freeList = tmpElement;
+    memhdr->freeList.nentries++;
 
-    SpinLockRelease(&memhdr->freeList[freelist_idx].mutex);
+    SpinLockRelease(&memhdr->freeList.mutex);
 
 	artp->hdr.tree->leaves--;
 }
