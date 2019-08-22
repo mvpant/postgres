@@ -85,6 +85,16 @@ void BufTryUnLockTree(ARTREE *artp)
 	if (artp) LWLockRelease(artree_getlock(artp));
 }
 
+void BufGetMainTreeStats(ARTREE_STATS *stats)
+{
+	/* caller should synchronize access  */
+	artree_fill_stats(BufGetMainTree(), stats);
+	stats->rnode.dbNode = 0;
+	stats->rnode.relNode = 0;
+	stats->rnode.spcNode = 0;
+	stats->forkNum = 0;
+}
+
 /*
  * Estimate space needed for mapping hashtable
  *		size is the desired hash table size (possibly more than NBuffers)
@@ -373,7 +383,7 @@ BufTableDelete(ARTREE *subtree, BufferTag *tagPtr, uint32 hashcode)
 long *
 BufTreeStats(void)
 {
-	return artree_nodes_used(SharedBufTree, SharedBlockSubtrees, NODESUBTREE_NELEM);
+	return artree_nodes_used(SharedBufTree, SharedBlockSubtrees);
 }
 
 ARTREE *

@@ -151,14 +151,6 @@ typedef struct FreeListMeta
 	int			nelem_alloc; /* number of entries to allocate at once */
 } FreeListMeta;
 
-typedef struct FreeListARTree
-{
-	slock_t		mutex;
-	long		nentries;
-	long		init_nelem;
-	NODEELEMENT *freeList;
-} FreeListARTree;
-
 /*
  * Header structure for a tree --- contains all changeable info
  *
@@ -201,6 +193,15 @@ struct ARTREE
 	MemoryContext tcxt;	 /* memory context if default allocator used */
 	bool isshared;	/* true if tree is in shared memory */
 };
+
+typedef struct FreeListARTree
+{
+	slock_t		mutex;
+	long		nentries;
+	long		init_nelem;
+	LEAFMEMHDR *child_leaf_memhdr;
+	NODEELEMENT *freeList;
+} FreeListARTree;
 
 /* allocation */
 static art_node *alloc_node(ARTREE *artp, uint8 type);
@@ -270,6 +271,15 @@ static const char SUBTREE_NAME[] = "subtree";
 	MAXALIGN((MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(TREEHDR)) \
 	 + MAXALIGN(sizeof(art_tree)) + sizeof(SUBTREE_NAME) \
 	 + STR_LEN(NODESUBTREE_NELEM)))
+
+static ARTREE_DATA_SIZE mem_info = {
+	.n4_size = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node4)),
+	.n16_size = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node16)),
+	.n48_size = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node48)),
+	.n256_size = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node256)),
+	.subtree_size = SUBTREE_SIZE,
+	.baseleaf_size = MAXALIGN(sizeof(art_leaf))
+};
 
 static void *
 TreeAlloc(Size size)
@@ -578,10 +588,9 @@ artree_get_shared_size(ARTREECTL *info, int flags)
 Size
 artree_subtreelist_size(long num_subtrees)
 {
-	Size size, elementSize;
+	Size size;
 	size = MAXALIGN(sizeof(FreeListARTree)) + sizeof(LEAFMEMHDR);
-	elementSize = SUBTREE_SIZE;
-	size = add_size(size, mul_size(elementSize, num_subtrees));
+	size = add_size(size, mul_size(mem_info.subtree_size, num_subtrees));
 	return size;
 }
 
@@ -618,10 +627,11 @@ artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree,
 	tmp_art.hdr.entrysize = 0;
 	tmp_art.alloc = ShmemAllocNoError;
 	leafs_alloc(&tmp_art, num_buffers + 100);
+	leaf_memhdr->freeListMeta.init_nelem = num_buffers + 100;
 
 	CurrentTreeCxt = TopMemoryContext;
 
-	elementSize = SUBTREE_SIZE;
+	elementSize = mem_info.subtree_size;
 
 	firstElement = (NODEELEMENT *) (((char *) artlist) +
 									MAXALIGN(sizeof(FreeListARTree)) +
@@ -665,6 +675,7 @@ artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree,
 	artlist->freeList = prevElement;
 	artlist->nentries = num_subtrees;
 	artlist->init_nelem = num_subtrees;
+	artlist->child_leaf_memhdr = leaf_memhdr;
 }
 
 ARTREE *
@@ -709,6 +720,12 @@ artree_dealloc_subtree(FreeListARTree *artlist, ARTREE *artp)
 	artlist->nentries++;
 	Assert(artlist->nentries <= artlist->init_nelem);
 	SpinLockRelease(&artlist->mutex);
+}
+
+ARTREE_DATA_SIZE
+artree_get_data_size()
+{
+	return mem_info;
 }
 
 Size
@@ -790,64 +807,51 @@ artree_iter_prefix(ARTREE *artp,
 	return art_iter_prefix(artp->hdr.tree, prefix, prefix_len, cb, data);
 }
 
-void
-artree_memory_usage(ARTREE *artp)
-{
-
-}
-
-void
-artree_nodes_proportion(ARTREE *artp)
-{
-    art_tree *t = artp->hdr.tree;
-	fprintf(stderr,
-			"Node4: %u Node16: %u Node48: %u Node256: %u\n",
-			t->size4, t->size16, t->size48, t->size256);
-}
-
 long *
-artree_nodes_used(ARTREE *artp, FreeListARTree *artlist, long num_subtrees)
+artree_nodes_used(ARTREE *artp, FreeListARTree *artlist)
 {
-	Size elementSize;
 	ARTMEMHDR *node_memhdr = artp->hdr.nctl;
-	LEAFMEMHDR *leaf_memhdr = artp->hdr.lctl;
+	LEAFMEMHDR *child_leaf_memhdr = artlist->child_leaf_memhdr;
 	long n4init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE4)].init_nelem,
 		 n16init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE16)].init_nelem,
 		 n48init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE48)].init_nelem,
-		 n256init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE256)].init_nelem;
+		 n256init_elems = node_memhdr->freeListMeta[NODE_FREELIST_IDX(NODE256)].init_nelem,
+		 nleaves_total = child_leaf_memhdr->freeListMeta.init_nelem,
+		 nleaves_curr = child_leaf_memhdr->freeList.nentries;
 
 	/* do not bother with lock acquiring */
-	stats[0] = 0;
-	stats[1] = n4init_elems - node_memhdr->freeList[0].nentries;
-	stats[2] = n16init_elems - node_memhdr->freeList[1].nentries;
-	stats[3] = n48init_elems - node_memhdr->freeList[2].nentries;
-	stats[4] = n256init_elems - node_memhdr->freeList[3].nentries;
-	stats[5] = num_subtrees - artlist->nentries;
-	stats[6] = 0;
+	stats[0] = nleaves_total - nleaves_curr;
+	stats[1] = n4init_elems - node_memhdr->freeList[NODE_FREELIST_IDX(NODE4)].nentries;
+	stats[2] = n16init_elems - node_memhdr->freeList[NODE_FREELIST_IDX(NODE16)].nentries;
+	stats[3] = n48init_elems - node_memhdr->freeList[NODE_FREELIST_IDX(NODE48)].nentries;
+	stats[4] = n256init_elems - node_memhdr->freeList[NODE_FREELIST_IDX(NODE256)].nentries;
+	stats[5] = artlist->init_nelem - artlist->nentries;
+	stats[6] = nleaves_total;
 	stats[7] = n4init_elems;
 	stats[8] = n16init_elems;
 	stats[9] = n48init_elems;
 	stats[10] = n256init_elems;
-	stats[11] = num_subtrees;
+	stats[11] = artlist->init_nelem;
 
-	elementSize = 0;
-	stats[12] = mul_size(0, elementSize);
+	stats[12] = mul_size(nleaves_total, mem_info.baseleaf_size + child_leaf_memhdr->keysize);
+	stats[13] = mul_size(n4init_elems, mem_info.n4_size);
+	stats[14] = mul_size(n16init_elems, mem_info.n16_size);
+	stats[15] = mul_size(n48init_elems, mem_info.n48_size);
+	stats[16] = mul_size(n256init_elems, mem_info.n256_size);
 
-	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node4));
-	stats[13] = mul_size(n4init_elems, elementSize);
-
-	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node16));
-	stats[14] = mul_size(n16init_elems, elementSize);
-
-	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node48));
-	stats[15] = mul_size(n48init_elems, elementSize);
-
-	elementSize = MAXALIGN(sizeof(NODEELEMENT)) + MAXALIGN(sizeof(art_node256));
-	stats[16] = mul_size(n256init_elems, elementSize);
-
-	stats[17] = artree_subtreelist_size(num_subtrees);
+	stats[17] = artree_subtreelist_size(artlist->init_nelem);
 
 	return stats;
+}
+
+void
+artree_fill_stats(ARTREE *artp, ARTREE_STATS *stats)
+{
+	stats->nleaves = artp->hdr.tree->leaves;
+	stats->nelem4 = artp->hdr.tree->size4;
+	stats->nelem16 = artp->hdr.tree->size16;
+	stats->nelem48 = artp->hdr.tree->size48;
+	stats->nelem256 = artp->hdr.tree->size256;
 }
 
 

@@ -20,28 +20,37 @@ CREATE VIEW pg_buffercache AS
 REVOKE ALL ON FUNCTION pg_buffercache_pages() FROM PUBLIC;
 REVOKE ALL ON pg_buffercache FROM PUBLIC;
 
-CREATE FUNCTION pg_stat_buftree()
+CREATE FUNCTION pg_buffertree_common()
 RETURNS RECORD
-AS 'MODULE_PATHNAME', 'pg_stat_buftree'
-LANGUAGE C;
+AS 'MODULE_PATHNAME', 'pg_buffertree_common'
+LANGUAGE C PARALLEL SAFE;
 
-CREATE TYPE ART_STAT_TYPE AS (
-    LEAFS INT, NODE4 INT, NODE16 INT, NODE48 INT, NODE256 INT, SUBTREES INT,
-    NLEAFS INT, NNODE4 INT, NNODE16 INT, NNODE48 INT, NNODE256 INT, NSUBTREES INT,
-	LEAFS_MEM INT, NODE4_MEM INT, NODE16_MEM INT,
-	NODE48_MEM INT, NODE256_MEM INT, SUBTREES_MEM INT);
+-- Create a view for convenient access.
+CREATE VIEW pg_buffertree_common AS
+	SELECT P.* FROM pg_buffertree_common() AS P
+	(leaves_used int4, node4_used int4, node16_used int4,
+	 node48_used int4, node256_used int4, subtrees_used int4,
+	 leaves_total int4, node4_total int4, node16_total int4,
+	 node48_total int4, node256_total int4, subtrees_total int4,
+	 leaves_mem int4, node4_mem int4, node16_mem int4,
+	 node48_mem int4, node256_mem int4, subtrees_mem int4);
 
-CREATE VIEW PG_STAT_BUFTREE
-AS SELECT (P).LEAFS, (P).NODE4, (P).NODE16, (P).NODE48, (P).NODE256, (P).SUBTREES
-FROM (SELECT PG_STAT_BUFTREE()::TEXT::ART_STAT_TYPE AS P) T
-UNION ALL
-SELECT (P).NLEAFS, (P).NNODE4, (P).NNODE16, (P).NNODE48, (P).NNODE256, (P).NSUBTREES
-FROM (SELECT PG_STAT_BUFTREE()::TEXT::ART_STAT_TYPE AS P) T
-UNION ALL
-SELECT (P).LEAFS_MEM, (P).NODE4_MEM, (P).NODE16_MEM,
-	(P).NODE48_MEM, (P).NODE256_MEM, (P).SUBTREES_MEM
-FROM (SELECT PG_STAT_BUFTREE()::TEXT::ART_STAT_TYPE AS P) T
-UNION ALL
-SELECT (P).LEAFS_MEM/1048576, (P).NODE4_MEM/1048576, (P).NODE16_MEM/1048576,
-	(P).NODE48_MEM/1048576, (P).NODE256_MEM/1048576, (P).SUBTREES_MEM/1048576
-FROM (SELECT PG_STAT_BUFTREE()::TEXT::ART_STAT_TYPE AS P) T;
+-- Don't want these to be available to public.
+REVOKE ALL ON FUNCTION pg_buffertree_common() FROM PUBLIC;
+REVOKE ALL ON pg_buffertree_common FROM PUBLIC;
+
+CREATE FUNCTION pg_buffertree_stats()
+RETURNS SETOF RECORD
+AS 'MODULE_PATHNAME', 'pg_buffertree_stats'
+LANGUAGE C PARALLEL SAFE;
+
+-- Create a view for convenient access.
+CREATE VIEW pg_buffertree AS
+	SELECT P.* FROM pg_buffertree_stats() AS P
+	(relfilenode oid, reltablespace oid, reldatabase oid,
+	 relforknumber int2, nleaves int4, nelem4 int4, nelem16 int4,
+	 nelem48 int4, nelem256 int4);
+
+-- Don't want these to be available to public.
+REVOKE ALL ON FUNCTION pg_buffertree_stats() FROM PUBLIC;
+REVOKE ALL ON pg_buffertree FROM PUBLIC;

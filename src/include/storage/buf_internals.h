@@ -337,6 +337,7 @@ extern void BufUnistallSubtree(BufferTag *tagPtr);
 extern ARTREE * BufLookupSubtree(SMgrRelation smgr, BufferTag *tagPtr);
 extern ARTREE * BufLookupSubtreeNoCache(BufferTag *tagPtr);
 extern long * BufTreeStats(void);
+extern void BufGetMainTreeStats(ARTREE_STATS *stats);
 
 /* localbuf.c */
 extern void LocalPrefetchBuffer(SMgrRelation smgr, ForkNumber forkNum,

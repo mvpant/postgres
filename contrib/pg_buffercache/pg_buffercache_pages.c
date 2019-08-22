@@ -239,84 +239,234 @@ pg_buffercache_pages(PG_FUNCTION_ARGS)
 		SRF_RETURN_DONE(funcctx);
 }
 
-PG_FUNCTION_INFO_V1(pg_stat_buftree);
+PG_FUNCTION_INFO_V1(pg_buffertree_common);
 
 Datum
-pg_stat_buftree(PG_FUNCTION_ARGS)
+pg_buffertree_common(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
 	Datum		values[18];
 	bool		nulls[18];
-	long *vals;
+	long		*stats;
 
-	/* Initialise values and NULL flags arrays */
-	MemSet(values, 0, sizeof(values));
+	/* Initialise NULL flags array */
 	MemSet(nulls, 0, sizeof(nulls));
 
 	/* Initialise attributes information in the tuple descriptor */
 	tupdesc = CreateTemplateTupleDesc(18, false);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "leafs",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "leaves_used",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "node4",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "node4_used",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "node16",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "node16_used",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "node48",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "node48_used",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "node256",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "node256_used",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 6, "subtrees",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 6, "subtrees_used",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 7, "leafs-total",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 7, "leaves_total",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 8, "node4-total",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 8, "node4_total",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 9, "node16-total",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 9, "node16_total",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 10, "node48-total",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 10, "node48_total",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 11, "node256-total",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 11, "node256_total",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 12, "subtrees-total",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 12, "subtrees_total",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 13, "leafs-mem",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 13, "leaves_mem",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 14, "node4-mem",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 14, "node4_mem",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 15, "node16-mem",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 15, "node16_mem",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 16, "node48-mem",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 16, "node48_mem",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 17, "node256-mem",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 17, "node256_mem",
 					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 18, "subtrees-mem",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 18, "subtrees_mem",
 					   INT4OID, -1, 0);
 
 	BlessTupleDesc(tupdesc);
 
-	vals = BufTreeStats();
+	stats = BufTreeStats();
 
-	/* Fill values and NULLs */
-	values[0] = Int32GetDatum(vals[0]);
-	values[1] = Int32GetDatum(vals[1]);
-	values[2] = Int32GetDatum(vals[2]);
-	values[3] = Int32GetDatum(vals[3]);
-	values[4] = Int32GetDatum(vals[4]);
-	values[5] = Int32GetDatum(vals[5]);
-	values[6] = Int32GetDatum(vals[6]);
-	values[7] = Int32GetDatum(vals[7]);
-	values[8] = Int32GetDatum(vals[8]);
-	values[9] = Int32GetDatum(vals[9]);
-	values[10] = Int32GetDatum(vals[10]);
-	values[11] = Int32GetDatum(vals[11]);
-	values[12] = Int32GetDatum(vals[12]);
-	values[13] = Int32GetDatum(vals[13]);
-	values[14] = Int32GetDatum(vals[14]);
-	values[15] = Int32GetDatum(vals[15]);
-	values[16] = Int32GetDatum(vals[16]);
-	values[17] = Int32GetDatum(vals[17]);
+	/* Fill values */
+	values[0] = Int32GetDatum(stats[0]);
+	values[1] = Int32GetDatum(stats[1]);
+	values[2] = Int32GetDatum(stats[2]);
+	values[3] = Int32GetDatum(stats[3]);
+	values[4] = Int32GetDatum(stats[4]);
+	values[5] = Int32GetDatum(stats[5]);
+	values[6] = Int32GetDatum(stats[6]);
+	values[7] = Int32GetDatum(stats[7]);
+	values[8] = Int32GetDatum(stats[8]);
+	values[9] = Int32GetDatum(stats[9]);
+	values[10] = Int32GetDatum(stats[10]);
+	values[11] = Int32GetDatum(stats[11]);
+	values[12] = Int32GetDatum(stats[12]);
+	values[13] = Int32GetDatum(stats[13]);
+	values[14] = Int32GetDatum(stats[14]);
+	values[15] = Int32GetDatum(stats[15]);
+	values[16] = Int32GetDatum(stats[16]);
+	values[17] = Int32GetDatum(stats[17]);
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(
 									  heap_form_tuple(tupdesc, values, nulls)));
+}
+
+#define NUM_BUFFERTREE_STATS_ELEM	9
+
+/*
+ * Function context for data persisting over repeated calls.
+ */
+typedef struct
+{
+	TupleDesc	tupdesc;
+	ARTREE_STATS *record;
+} BufferTreeStatsContext;
+
+typedef struct
+{
+	int record_idx;
+	ARTREE_STATS *record;
+} TreeIteratorState;
+
+static int
+StatsIteratorCallback(void *data, const uint8 *k, uint32_t k_len, void *val)
+{
+	TreeIteratorState *state = (TreeIteratorState *) data;
+	BufferTag *tag = (BufferTag *) k;
+	ARTREE *subtree = (ARTREE *) val;
+	ARTREE_STATS *stats = &state->record[state->record_idx++];
+
+	artree_fill_stats(subtree, stats);
+	stats->rnode = tag->rnode;
+	stats->forkNum = tag->forkNum;
+
+	return 0;
+}
+
+PG_FUNCTION_INFO_V1(pg_buffertree_stats);
+
+Datum
+pg_buffertree_stats(PG_FUNCTION_ARGS)
+{
+	FuncCallContext *funcctx;
+	Datum		result;
+	MemoryContext oldcontext;
+	BufferTreeStatsContext *fctx;	/* User function context. */
+	TupleDesc	tupledesc;
+	TupleDesc	expected_tupledesc;
+	HeapTuple	tuple;
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		ARTREE_STATS		stats;
+		TreeIteratorState	iter_state;
+		int					max_calls;
+
+		funcctx = SRF_FIRSTCALL_INIT();
+
+		/* Switch context when allocating stuff to be used in later calls */
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+		/* Create a user function context for cross-call persistence */
+		fctx = (BufferTreeStatsContext *) palloc(sizeof(BufferTreeStatsContext));
+
+		if (get_call_result_type(fcinfo, NULL, &expected_tupledesc) != TYPEFUNC_COMPOSITE)
+			elog(ERROR, "return type must be a row type");
+
+		if (expected_tupledesc->natts != NUM_BUFFERTREE_STATS_ELEM)
+			elog(ERROR, "incorrect number of output arguments");
+
+		/* Construct a tuple descriptor for the result rows. */
+		tupledesc = CreateTemplateTupleDesc(expected_tupledesc->natts, false);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 1, "relfilenode",
+						   OIDOID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 2, "reltablespace",
+						   OIDOID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 3, "reldatabase",
+						   OIDOID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 4, "relforknumber",
+						   INT2OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 5, "nleaves",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 6, "nelem4",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 7, "nelem16",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 8, "nelem48",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupledesc, (AttrNumber) 9, "nelem256",
+						   INT4OID, -1, 0);
+
+		fctx->tupdesc = BlessTupleDesc(tupledesc);
+
+		/* Lock main tree while we collect stats */
+		BufLockMainTree(LW_SHARED);
+		BufGetMainTreeStats(&stats);
+		max_calls = stats.nleaves + 1;
+
+		fctx->record = (ARTREE_STATS *)
+			MemoryContextAllocHuge(CurrentMemoryContext,
+								   sizeof(ARTREE_STATS) * max_calls);
+
+		/* Set max calls and remember the user function context. */
+		funcctx->max_calls = max_calls;
+		funcctx->user_fctx = fctx;
+
+		/* Return to original context when allocating transient memory */
+		MemoryContextSwitchTo(oldcontext);
+
+		iter_state.record_idx = 0;
+		iter_state.record = fctx->record;
+		artree_iter(BufGetMainTree(), StatsIteratorCallback, &iter_state);
+
+		if (max_calls - 1 != iter_state.record_idx)
+			elog(ERROR, "incorrect stats in Buffer Shared Tree");
+
+		/* Save stats of the main buffer tree as last record */
+		fctx->record[iter_state.record_idx] = stats;
+
+		/* Don't forget to unlock once done */
+		BufUnLockMainTree();
+	}
+
+	funcctx = SRF_PERCALL_SETUP();
+
+	/* Get the saved state */
+	fctx = funcctx->user_fctx;
+
+	if (funcctx->call_cntr < funcctx->max_calls)
+	{
+		uint32		i = funcctx->call_cntr;
+		Datum		values[NUM_BUFFERTREE_STATS_ELEM];
+		bool		nulls[NUM_BUFFERTREE_STATS_ELEM];
+
+		MemSet((void *) nulls, 0, sizeof(nulls));
+
+		values[0] = ObjectIdGetDatum(fctx->record[i].rnode.relNode);
+		values[1] = ObjectIdGetDatum(fctx->record[i].rnode.spcNode);
+		values[2] = ObjectIdGetDatum(fctx->record[i].rnode.dbNode);
+		values[3] = ObjectIdGetDatum(fctx->record[i].forkNum);
+		values[4] = Int32GetDatum(fctx->record[i].nleaves);
+		values[5] = Int32GetDatum(fctx->record[i].nelem4);
+		values[6] = Int32GetDatum(fctx->record[i].nelem16);
+		values[7] = Int32GetDatum(fctx->record[i].nelem48);
+		values[8] = Int32GetDatum(fctx->record[i].nelem256);
+
+		/* Build and return the tuple. */
+		tuple = heap_form_tuple(fctx->tupdesc, values, nulls);
+		result = HeapTupleGetDatum(tuple);
+
+		SRF_RETURN_NEXT(funcctx, result);
+	}
+	else
+		SRF_RETURN_DONE(funcctx);
 }

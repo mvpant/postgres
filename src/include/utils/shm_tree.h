@@ -3,6 +3,8 @@
 #define ARTREE_H
 
 #include "storage/lwlock.h"
+#include "storage/relfilenode.h"
+#include "common/relpath.h"
 
 /*
  * Space allocation function for a tree --- designed to match malloc().
@@ -33,6 +35,25 @@ typedef struct ARTREECTL {
 #define ARTREE_ATTACH		0x0010	/* Do not initialize tctl */
 #define ARTREE_COMPOUND		0x0020  /* Tree consists of two parts */
 
+typedef struct ARTREE_STATS {
+	RelFileNode rnode;
+	ForkNumber	forkNum;
+	uint32		nleaves;
+	uint32		nelem4;
+	uint32		nelem16;
+	uint32		nelem48;
+	uint32		nelem256;
+} ARTREE_STATS;
+
+typedef struct ARTREE_DATA_SIZE {
+	uint16 n4_size;
+	uint16 n16_size;
+	uint16 n48_size;
+	uint16 n256_size;
+	uint16 subtree_size;
+	uint16 baseleaf_size;
+} ARTREE_DATA_SIZE;
+
 extern ARTREE *artree_create(const char *treename, long num_subtrees, long nelem,
 							 ARTREECTL *info, int flags);
 extern int artree_destroy(ARTREE *t);
@@ -40,13 +61,13 @@ extern void *artree_insert(ARTREE *artp, const uint8 *key, void *value);
 extern void *artree_delete(ARTREE *artp, const uint8 *key);
 extern void *artree_search(ARTREE *artp, const uint8 *key);
 
-extern void artree_memory_usage(ARTREE *artp);
-extern void artree_nodes_proportion(ARTREE *artp);
+extern ARTREE_DATA_SIZE artree_get_data_size(void);
 extern Size artree_estimate_size(long num_subtrees, Size subtree_keysize, long num_entries,
 								 Size keysize, Size entrysize);
 extern Size artree_get_shared_size(ARTREECTL *info, int flags);
-extern long *artree_nodes_used(ARTREE *artp, FreeListARTree *artlist, long num_subtrees);
+extern long *artree_nodes_used(ARTREE *artp, FreeListARTree *artlist);
 extern LWLock *artree_getlock(ARTREE *artp);
+extern void artree_fill_stats(ARTREE *artp, ARTREE_STATS *stats);
 
 extern Size artree_subtreelist_size(long num_subtrees);
 extern void artree_build_subtreelist(FreeListARTree *artlist, ARTREE *buftree,
